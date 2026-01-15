@@ -5,6 +5,7 @@ Google AI Search MCP Server
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from mcp.server import Server
@@ -19,6 +20,9 @@ server = Server("google-ai-search")
 
 # 创建搜索器实例（使用持久化用户数据目录）
 searcher = GoogleAISearcher(headless=True, use_user_data=True, timeout=60)
+
+# 线程池用于运行同步的 Playwright 代码
+_executor = ThreadPoolExecutor(max_workers=1)
 
 
 @server.list_tools()
@@ -71,8 +75,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if not query:
         return [TextContent(type="text", text="错误: 请提供搜索关键词")]
     
-    # 执行搜索
-    result = searcher.search(query, language)
+    # 在线程池中执行同步的 Playwright 搜索（避免阻塞 asyncio 事件循环）
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_executor, searcher.search, query, language)
     
     if not result.success:
         return [TextContent(type="text", text=f"搜索失败: {result.error}")]
