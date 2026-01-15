@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "patchright-mcp"
+version = "0.1.0"
+description = "Patchright MCP Server - 防检测浏览器自动化，可替代 fetch 和 playwright MCP"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Your Name", email = "your@email.com" }
+]
+keywords = ["mcp", "patchright", "playwright", "browser", "automation", "anti-detection", "stealth"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "patchright>=1.0.0",
+    "markdownify>=0.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "hypothesis>=6.0.0",
+]
+
+[project.scripts]
+patchright-mcp = "patchright_mcp.server:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patchright_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

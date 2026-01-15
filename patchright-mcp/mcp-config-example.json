@@ -1,0 +1,17 @@
+{
+  "_说明": "将 patchright 配置添加到 ~/.kiro/settings/mcp.json 的 mcpServers 中，请替换 <project-path> 为实际路径",
+  
+  "patchright": {
+    "command": "<project-path>/patchright-mcp/.venv/Scripts/python.exe",
+    "args": ["-m", "patchright_mcp"],
+    "cwd": "<project-path>/patchright-mcp/src",
+    "disabled": false,
+    "autoApprove": [
+      "patchright_fetch",
+      "patchright_screenshot",
+      "patchright_click",
+      "patchright_fill_form",
+      "patchright_execute_js"
+    ]
+  }
+}

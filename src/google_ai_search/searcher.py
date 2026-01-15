@@ -8,6 +8,7 @@ import os
 import logging
 import socket
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List
@@ -166,10 +167,11 @@ class GoogleAISearcher:
                 return proxy
         
         # 2. 检测常见代理端口（v2ray、clash 等）
+        # 优先使用 HTTP 代理，比 SOCKS5 更稳定
         common_ports = [
-            (10809, "http://127.0.0.1:10809"),  # v2ray 默认 HTTP 代理
-            (10808, "socks5://127.0.0.1:10808"),  # v2ray 默认 SOCKS5 代理
+            (10809, "http://127.0.0.1:10809"),  # v2ray 默认 HTTP 代理（优先）
             (7890, "http://127.0.0.1:7890"),   # clash 默认 HTTP 代理
+            (10808, "socks5://127.0.0.1:10808"),  # v2ray 默认 SOCKS5 代理
             (7891, "socks5://127.0.0.1:7891"),  # clash 默认 SOCKS5 代理
             (1080, "socks5://127.0.0.1:1080"),  # 通用 SOCKS5 端口
         ]
@@ -241,21 +243,41 @@ class GoogleAISearcher:
         
         context = None
         try:
-            # 使用持久化上下文打开非无头浏览器
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=self._user_data_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_data"),
-                executable_path=self._browser_path,
-                headless=False,  # 必须显示窗口让用户操作
-                args=[
+            # 等待一下让之前的浏览器完全释放资源
+            time.sleep(1)
+            
+            # 检测代理
+            proxy_server = self._detect_proxy()
+            
+            # 构建启动选项
+            launch_options = {
+                "user_data_dir": self._user_data_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_data"),
+                "executable_path": self._browser_path,
+                "headless": False,  # 必须显示窗口让用户操作
+                "args": [
                     '--disable-blink-features=AutomationControlled',
                     '--disable-infobars',
                     '--no-sandbox',
                 ],
-                viewport={'width': 1280, 'height': 800},
-            )
+                "viewport": {'width': 1280, 'height': 800},
+            }
+            
+            # 添加代理配置（与主搜索保持一致）
+            if proxy_server:
+                logger.info(f"用户介入模式使用代理: {proxy_server}")
+                launch_options["proxy"] = {"server": proxy_server}
+            
+            # 使用持久化上下文打开非无头浏览器
+            context = playwright.chromium.launch_persistent_context(**launch_options)
             
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url, wait_until='domcontentloaded', timeout=120000)  # 给用户更多时间
+            
+            try:
+                page.goto(url, wait_until='domcontentloaded', timeout=120000)  # 给用户更多时间
+            except Exception as nav_error:
+                logger.warning(f"用户介入模式导航失败: {nav_error}")
+                # 即使导航失败也继续，让用户手动处理
+                page.wait_for_timeout(2000)
             
             print("请在浏览器中完成操作（验证码、登录等）...")
             print("操作完成后，搜索结果会自动获取。")

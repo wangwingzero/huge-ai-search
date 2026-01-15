@@ -25,9 +25,6 @@ wheels/
 venv/
 ENV/
 
-# Browser data (contains login cookies)
-browser_data/
-
 # IDE
 .idea/
 .vscode/
@@ -36,21 +33,13 @@ browser_data/
 
 # Testing
 .pytest_cache/
-.coverage
-htmlcov/
 .hypothesis/
+htmlcov/
+.coverage
 
-# Kiro specs (optional, can be included)
-# .kiro/
+# Browser data
+browser_data/
 
-# Logs
-logs/
-
-# Images (screenshots etc)
-image/
-
-# Test files
-test_*.py
-!tests/test_*.py
-login_google.py
-setup_browser.py
+# OS
+.DS_Store
+Thumbs.db
