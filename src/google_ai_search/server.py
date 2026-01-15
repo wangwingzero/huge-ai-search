@@ -18,7 +18,7 @@ from .searcher import GoogleAISearcher, SearchResult
 server = Server("google-ai-search")
 
 # 创建搜索器实例（使用持久化用户数据目录）
-searcher = GoogleAISearcher(headless=True, use_user_data=True)
+searcher = GoogleAISearcher(headless=True, use_user_data=True, timeout=60)
 
 
 @server.list_tools()
