@@ -95,7 +95,11 @@ def format_search_result(result: SearchResult) -> str:
 async def main():
     """主入口"""
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream)
+        await server.run(
+            read_stream, 
+            write_stream,
+            server.create_initialization_options()
+        )
 
 
 def run():
