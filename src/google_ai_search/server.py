@@ -27,18 +27,30 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="google_ai_search",
-            description="使用 Google AI 模式搜索，获取 AI 总结的搜索结果。适合需要快速获取某个问题的综合答案的场景。",
+            description="""使用 Google AI 模式搜索，获取 AI 总结的搜索结果。
+
+触发关键词: 谷歌、Google、搜索、search、查询、查找、搜一下、帮我搜、网上查、最新信息、实时信息
+
+适用场景:
+- 需要获取最新、实时的信息（如新闻、技术动态、产品发布）
+- 需要 AI 总结的综合答案而非原始网页列表
+- 查询技术问题、编程问题、API 用法
+- 了解某个话题的概述和要点
+- 需要带来源引用的可靠信息
+
+特点: 使用 Patchright 防检测技术，支持中英文搜索，返回 AI 总结 + 来源链接。""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键词或问题"
+                        "description": "搜索关键词或自然语言问题。支持中文、英文或混合查询。例如: 'Python asyncio 最佳实践'、'2024年最流行的前端框架'、'如何配置 nginx 反向代理'"
                     },
                     "language": {
                         "type": "string",
-                        "description": "语言代码，如 zh-CN（中文）、en-US（英文）",
-                        "default": "zh-CN"
+                        "description": "搜索结果语言。zh-CN 返回中文结果，en-US 返回英文结果。根据查询内容自动选择合适的语言。",
+                        "default": "zh-CN",
+                        "enum": ["zh-CN", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR"]
                     }
                 },
                 "required": ["query"]
