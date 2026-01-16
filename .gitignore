@@ -27,6 +27,8 @@ ENV/
 
 # Browser data (contains login cookies)
 browser_data/
+chrome_browser_data/
+edge_browser_data/
 
 # IDE
 .idea/
@@ -53,4 +55,5 @@ image/
 test_*.py
 !tests/test_*.py
 login_google.py
+login_edge.py
 setup_browser.py

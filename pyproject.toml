@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "google-ai-search-mcp"
-version = "0.1.0"
+version = "1.0.0"
 description = "Google AI Search MCP Server - 使用 Patchright 抓取 Google AI 模式搜索结果"
 readme = "README.md"
 license = "MIT"

@@ -25,6 +25,7 @@ logger.info("MCP Server 模块加载")
 server = Server("google-ai-search")
 
 # 创建搜索器实例（使用持久化用户数据目录）
+# headless=True 使用 Edge 静默模式（Edge 对 Cookie 支持更好）
 searcher = GoogleAISearcher(headless=True, use_user_data=True, timeout=60)
 
 # 线程池用于运行同步的 Playwright 代码

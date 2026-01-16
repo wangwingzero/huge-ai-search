@@ -1,0 +1,12 @@
+{
+  "name": "Git 提交助手",
+  "version": "1.0.0",
+  "description": "基于 Conventional Commits 规范分析 Git 变更，自动生成语义化版本号和规范的提交日志",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "请帮我完成 Git 提交，遵循 Conventional Commits 规范和 SemVer 语义化版本控制：\n\n## 第一步：检查变更状态\n1. 运行 `git status` 查看工作区状态\n2. 运行 `git diff --staged` 查看已暂存的变更\n3. 如果没有 staged 文件，询问是否执行 `git add .` 或只添加特定文件\n\n## 第二步：分析变更类型\n根据 Conventional Commits 规范判断变更类型：\n- `feat`: 新功能（触发 MINOR 版本更新）\n- `fix`: Bug 修复（触发 PATCH 版本更新）\n- `docs`: 仅文档变更\n- `style`: 代码格式调整（空格、分号等，不影响代码逻辑）\n- `refactor`: 代码重构（既不修复 Bug 也不添加功能）\n- `perf`: 性能优化\n- `test`: 添加或修改测试\n- `build`: 构建系统或外部依赖变更\n- `ci`: CI 配置变更\n- `chore`: 其他不修改 src 或 test 的变更\n\n## 第三步：确定 scope 范围\n根据修改的模块确定 scope（可选），常见取值：\n- 按模块：`api`, `core`, `ui`, `cli`, `db`\n- 按功能：`auth`, `search`, `config`\n- 按文件/包：`searcher`, `server`, `browser`\n\n## 第四步：版本号更新（SemVer）\n查看 pyproject.toml 中的当前版本号，根据变更类型建议新版本：\n- **MAJOR (X.0.0)**: 不兼容的 API 变更（Breaking Change）\n- **MINOR (x.Y.0)**: 新增功能（向后兼容）- feat 类型\n- **PATCH (x.y.Z)**: Bug 修复（向后兼容）- fix 类型\n- docs/style/refactor/test/chore 等通常不更新版本，除非有特殊需要\n\n## 第五步：生成 Commit Message\n遵循 50/72 原则生成规范的提交信息：\n```\n<type>(<scope>): <description>  # 标题行 ≤50 字符，祈使句，首字母大写，无句号\n                                 # 空行\n[optional body]                  # 正文每行 ≤72 字符，解释 why 而非 how\n                                 # 空行\n[optional footer(s)]             # 页脚：BREAKING CHANGE:, Closes #123, Refs: URL\n```\n\n破坏性变更标记方式：\n- 在 type 后加 `!`：`feat(api)!: remove deprecated endpoint`\n- 或在 footer 中：`BREAKING CHANGE: 描述不兼容的变更`\n\n## 第六步：确认并执行\n展示完整的提交计划，询问确认后执行：\n1. 更新 pyproject.toml 版本号（如需要）\n2. 执行 `git add` 暂存文件\n3. 执行 `git commit -m \"<message>\"`\n\n## 第七步：推送确认\n询问是否需要 `git push` 推送到远程仓库"
+  }
+}

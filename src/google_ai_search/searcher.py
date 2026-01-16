@@ -161,12 +161,12 @@ class GoogleAISearcher:
     # 会话超时时间（秒）- 超过此时间未使用则关闭会话
     SESSION_TIMEOUT = 300  # 5 分钟
     
-    def __init__(self, timeout: int = 30, headless: bool = True, use_user_data: bool = False):
+    def __init__(self, timeout: int = 30, headless: bool | str = True, use_user_data: bool = False):
         """初始化
         
         Args:
             timeout: 页面加载超时时间（秒）
-            headless: 是否无头模式
+            headless: 无头模式设置。True=传统headless, False=有头, "new"=新版headless（更好的Cookie支持）
             use_user_data: 是否使用用户浏览器数据（可复用登录状态）
         """
         self.timeout = timeout
@@ -193,17 +193,17 @@ class GoogleAISearcher:
     def _find_browser(self) -> Optional[str]:
         """查找可用的浏览器
         
-        优先检测 Chrome（用于持久化会话，避免与日常使用的 Edge 冲突），然后检测 Edge。
+        优先检测 Edge（Windows 预装，headless 模式 Cookie 支持更好），然后检测 Chrome。
         
         Returns:
             浏览器可执行文件路径，未找到返回 None
         """
-        # 优先 Chrome（用于持久化会话，不与日常 Edge 冲突）
-        for path in self.CHROME_PATHS:
+        # 优先 Edge（headless 模式下 Cookie 支持更好）
+        for path in self.EDGE_PATHS:
             if os.path.exists(path):
                 return path
-        # 备用 Edge
-        for path in self.EDGE_PATHS:
+        # 备用 Chrome
+        for path in self.CHROME_PATHS:
             if os.path.exists(path):
                 return path
         return None
@@ -211,16 +211,16 @@ class GoogleAISearcher:
     def _get_user_data_dir(self) -> Optional[str]:
         """获取用户数据目录
         
-        使用专用的 Chrome 数据目录，避免与 Edge 冲突
+        使用专用的 Edge 数据目录（edge_browser_data），不影响用户日常使用的 Edge
         """
-        # 使用专用的 Chrome 数据目录
-        chrome_data = os.path.join(
+        # 使用专用的 Edge 数据目录，与用户日常 Edge 隔离
+        edge_data = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-            "chrome_browser_data"
+            "edge_browser_data"
         )
         # 确保目录存在
-        os.makedirs(chrome_data, exist_ok=True)
-        return chrome_data
+        os.makedirs(edge_data, exist_ok=True)
+        return edge_data
     
     def has_active_session(self) -> bool:
         """检查是否有活跃的浏览器会话
@@ -346,11 +346,23 @@ class GoogleAISearcher:
             self.close_session()
             return False
     
+    # AI 正在加载/思考的关键词（检测到这些时需要继续等待）
+    AI_LOADING_KEYWORDS = [
+        "正在思考",
+        "正在生成",
+        "Thinking",
+        "Generating",
+        "Loading",
+    ]
+    
     def _wait_for_streaming_complete(self, page, max_wait_seconds: int = 30) -> bool:
         """等待 AI 流式输出完成
         
-        通过监测页面内容长度变化来判断流式输出是否结束。
-        当内容长度连续 2 秒不再变化时，认为输出完成。
+        基于 2026 年最佳实践的优化策略：
+        1. 优先检测加载指示器（光标、停止按钮）消失
+        2. 检测追问建议出现（表示生成完成）
+        3. 监控内容增长，连续稳定则认为完成
+        4. 检测"正在思考"等加载状态关键词
         
         Args:
             page: Playwright Page 对象
@@ -363,19 +375,47 @@ class GoogleAISearcher:
         
         last_content_length = 0
         stable_count = 0
-        stable_threshold = 2  # 连续 2 次检测内容不变则认为完成
-        check_interval = 1000  # 每秒检测一次
+        stable_threshold = 3  # 连续 3 次检测内容不变则认为完成（增加到 3 次更可靠）
+        check_interval = 500  # 500ms 采样间隔
+        min_content_length = 500  # 最小内容长度，避免在"正在思考"时就结束（增加到 500）
         
-        for i in range(max_wait_seconds):
+        for i in range(max_wait_seconds * 2):  # 因为间隔减半，循环次数加倍
             try:
-                current_length = page.evaluate("() => document.body.innerText.length")
+                content = page.evaluate("() => document.body.innerText")
+                current_length = len(content)
                 
-                if current_length == last_content_length:
-                    stable_count += 1
-                    logger.debug(f"内容稳定检测: {stable_count}/{stable_threshold}")
-                    if stable_count >= stable_threshold:
-                        logger.info(f"AI 输出完成，内容长度: {current_length}")
-                        return True
+                # 策略1：检查加载指示器是否存在（最快的检测方式）
+                has_loading_indicator = self._check_loading_indicators(page)
+                
+                # 策略2：检查是否仍在加载状态（关键词检测）
+                is_loading = any(kw in content for kw in self.AI_LOADING_KEYWORDS)
+                
+                # 策略3：检查追问建议是否出现（表示生成完成）
+                has_follow_up = self._check_follow_up_suggestions(page)
+                
+                if has_follow_up and current_length >= min_content_length:
+                    # 追问建议出现，说明生成完成
+                    logger.info(f"检测到追问建议，AI 输出完成，内容长度: {current_length}")
+                    return True
+                
+                if has_loading_indicator or is_loading:
+                    # 仍在加载，重置稳定计数
+                    stable_count = 0
+                    if has_loading_indicator:
+                        logger.debug("检测到加载指示器，继续等待...")
+                    else:
+                        logger.debug("AI 正在思考/生成中，继续等待...")
+                elif current_length == last_content_length:
+                    # 内容稳定且不在加载状态
+                    if current_length >= min_content_length:
+                        stable_count += 1
+                        logger.debug(f"内容稳定检测: {stable_count}/{stable_threshold}")
+                        if stable_count >= stable_threshold:
+                            logger.info(f"AI 输出完成，内容长度: {current_length}")
+                            return True
+                    else:
+                        # 内容太短，可能还没开始输出
+                        logger.debug(f"内容太短 ({current_length} < {min_content_length})，继续等待")
                 else:
                     stable_count = 0
                     logger.debug(f"内容仍在加载: {last_content_length} -> {current_length}")
@@ -388,6 +428,52 @@ class GoogleAISearcher:
                 break
         
         logger.warning(f"等待流式输出超时（{max_wait_seconds}秒）")
+        return False
+    
+    def _check_follow_up_suggestions(self, page: "Page") -> bool:
+        """检查页面上是否出现追问建议（表示 AI 生成完成）
+        
+        Args:
+            page: Playwright Page 对象
+            
+        Returns:
+            是否出现追问建议
+        """
+        # 追问建议的选择器
+        follow_up_selectors = [
+            'div[data-subtree="aimc"] textarea',  # 追问输入框
+            'div[data-subtree="aimc"] input[type="text"]',  # 追问输入框（备用）
+            '[aria-label*="follow"]',  # 追问相关元素
+            '[aria-label*="追问"]',  # 中文追问
+            '[placeholder*="follow"]',  # 追问输入框
+            '[placeholder*="追问"]',  # 中文追问输入框
+        ]
+        
+        for selector in follow_up_selectors:
+            try:
+                element = page.query_selector(selector)
+                if element and element.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+    
+    def _check_loading_indicators(self, page) -> bool:
+        """检查页面上是否存在加载指示器
+        
+        Args:
+            page: Playwright Page 对象
+            
+        Returns:
+            是否存在加载指示器
+        """
+        for selector in self.AI_LOADING_SELECTORS:
+            try:
+                element = page.query_selector(selector)
+                if element and element.is_visible():
+                    return True
+            except Exception:
+                continue
         return False
     
     def _remove_user_query_from_content(self, content: str, query: str) -> str:
@@ -558,12 +644,20 @@ class GoogleAISearcher:
     
     # AI 模式选择器和关键词常量
     AI_SELECTORS = [
+        'div[data-subtree="aimc"]',  # 2026 年 Google AI Mode 核心容器（最新）
         'div[data-attrid="wa:/m/0"]',  # 旧版选择器
         '[data-async-type="editableDirectAnswer"]',  # AI 回答区域
         '.wDYxhc',  # AI 概述容器
         '[data-md="50"]',  # AI 模式标记
     ]
     AI_KEYWORDS = ['AI 模式', 'AI Mode', 'AI モード']
+    
+    # AI 正在生成的指示器选择器（检测到这些元素存在时需要继续等待）
+    AI_LOADING_SELECTORS = [
+        '.typing-cursor',  # 打字光标
+        '[data-loading="true"]',  # 加载状态标记
+        '.stop-button:not([hidden])',  # 停止按钮可见
+    ]
     
     def _handle_cookie_consent(self, page: "Page") -> bool:
         """处理 Google Cookie 同意对话框
@@ -626,8 +720,10 @@ class GoogleAISearcher:
         
         return False
     
-    def _wait_for_ai_content(self, page: "Page", timeout_per_selector: int = 3000) -> bool:
+    def _wait_for_ai_content(self, page: "Page", timeout_per_selector: int = 1500) -> bool:
         """等待 AI 内容加载
+        
+        优化策略：先快速检查关键词（毫秒级），再尝试选择器（秒级）
         
         Args:
             page: Playwright Page 对象
@@ -639,7 +735,16 @@ class GoogleAISearcher:
         # 首先处理可能的 Cookie 同意对话框
         self._handle_cookie_consent(page)
         
-        # 尝试多个选择器
+        # 优先策略：快速检查页面关键词（最快，毫秒级）
+        try:
+            content = page.evaluate("() => document.body.innerText")
+            if any(kw in content for kw in self.AI_KEYWORDS):
+                logger.info("通过关键词快速检测到 AI 内容")
+                return True
+        except Exception:
+            pass
+        
+        # 备用策略：尝试选择器（较慢，但更精确）
         for selector in self.AI_SELECTORS:
             try:
                 page.wait_for_selector(selector, timeout=timeout_per_selector)
@@ -648,14 +753,17 @@ class GoogleAISearcher:
             except Exception:
                 continue
         
-        # 备用策略：检查页面关键词
-        logger.debug("未找到特定 AI 选择器，检查页面内容...")
-        for _ in range(5):  # 最多等待 5 秒
-            content = page.evaluate("() => document.body.innerText")
-            if any(kw in content for kw in self.AI_KEYWORDS):
-                logger.info("通过关键词检测到 AI 内容")
-                return True
+        # 最后策略：等待关键词出现（页面可能还在加载）
+        logger.debug("未找到 AI 内容，等待页面加载...")
+        for _ in range(3):  # 最多等待 3 秒
             page.wait_for_timeout(1000)
+            try:
+                content = page.evaluate("() => document.body.innerText")
+                if any(kw in content for kw in self.AI_KEYWORDS):
+                    logger.info("通过关键词检测到 AI 内容")
+                    return True
+            except Exception:
+                continue
         
         return False
     
