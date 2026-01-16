@@ -40,6 +40,18 @@ htmlcov/
 # Browser data
 browser_data/
 
+# Secrets & Environment
+.env
+.env.*
+*.pem
+*.key
+secrets.toml
+credentials.json
+
+# Logs
+*.log
+logs/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -56,7 +56,7 @@ def _check_cooldown() -> Optional[TextContent]:
     if _login_timeout_timestamp is None:
         return None
     
-    elapsed = time.time() - _login_timeout_timestamp
+    elapsed: float = time.time() - _login_timeout_timestamp
     
     if elapsed < _LOGIN_COOLDOWN_SECONDS:
         remaining = int(_LOGIN_COOLDOWN_SECONDS - elapsed)
@@ -72,6 +72,27 @@ def _check_cooldown() -> Optional[TextContent]:
         )
     else:
         # Cooldown expired, reset state
+        _login_timeout_timestamp = None
+        return None
+
+
+def _record_login_timeout() -> TextContent:
+    """Record a login timeout and return notification message.
+    
+    Returns:
+        TextContent with timeout notification message
+    """
+    global _login_timeout_timestamp
+    _login_timeout_timestamp = time.time()
+    
+    return TextContent(
+        type="text",
+        text=f"⏸️ 操作需要用户验证但超时\n\n"
+             f"该工具将暂停 {_LOGIN_COOLDOWN_SECONDS // 60} 分钟，避免重复打扰不在场的用户。\n"
+             f"**注意**: 由于 MCP 协议限制，服务器无法检测对话边界。\n"
+             f"如果用户开始新对话，可以建议用户等待冷却期结束或使用其他工具。"
+    )
+
 
 server = Server("patchright-mcp")
 
@@ -230,6 +251,11 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent]:
     """执行工具调用"""
+    # Check cooldown state before any operation
+    cooldown_msg = _check_cooldown()
+    if cooldown_msg:
+        return [cooldown_msg]
+    
     loop = asyncio.get_running_loop()
     
     if name == "patchright_fetch":
@@ -243,6 +269,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         result = await loop.run_in_executor(_executor, browser.fetch, url, wait_for)
         
         if not result.success:
+            if _is_login_timeout_error(result.error or ""):
+                return [_record_login_timeout()]
             return [TextContent(type="text", text=f"抓取失败: {result.error}")]
         
         if fmt == "html":
@@ -265,6 +293,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         result = await loop.run_in_executor(_executor, browser.screenshot, url, full_page)
         
         if not result.success:
+            if _is_login_timeout_error(result.error or ""):
+                return [_record_login_timeout()]
             return [TextContent(type="text", text=f"截图失败: {result.error}")]
         
         # 返回 base64 编码的图片
@@ -284,6 +314,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         result = await loop.run_in_executor(_executor, browser.click, url, selector)
         
         if not result.success:
+            if _is_login_timeout_error(result.error or ""):
+                return [_record_login_timeout()]
             return [TextContent(type="text", text=f"点击失败: {result.error}")]
         
         content = _html_to_markdown(result.html)
@@ -303,6 +335,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         )
         
         if not result.success:
+            if _is_login_timeout_error(result.error or ""):
+                return [_record_login_timeout()]
             return [TextContent(type="text", text=f"表单提交失败: {result.error}")]
         
         content = _html_to_markdown(result.html)
@@ -319,6 +353,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         result = await loop.run_in_executor(_executor, browser.execute_js, url, script)
         
         if not result.success:
+            if _is_login_timeout_error(result.error or ""):
+                return [_record_login_timeout()]
             return [TextContent(type="text", text=f"执行失败: {result.error}")]
         
         output = f"## JavaScript 执行结果\n\n**URL**: {result.url}\n\n```\n{result.content}\n```"
@@ -330,12 +366,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
 async def main():
     """主入口"""
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options()
+            )
+    finally:
+        _executor.shutdown(wait=False)
 
 
 def run():

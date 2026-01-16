@@ -8,6 +8,7 @@
 - 🛡️ 使用 Patchright 绕过反爬检测
 - 🌐 支持多语言搜索
 - 📚 返回 AI 回答和来源链接
+- 🔄 支持多轮对话追问（保持上下文，增量返回新内容）
 
 ## 安装
 
@@ -74,15 +75,27 @@ pip install -e .
 
 ### google_ai_search
 
-使用 Google AI 模式搜索，获取 AI 总结的搜索结果。
+使用 Google AI 模式搜索，获取 AI 总结的搜索结果。支持多轮对话追问。
 
 **参数**：
 - `query` (必需): 搜索关键词或问题
 - `language` (可选): 语言代码，默认 `zh-CN`
+- `follow_up` (可选): 是否为追问，默认 `false`
+  - `false`: 首次搜索或开启新话题
+  - `true`: 在上一次搜索基础上继续对话，只返回新增内容
 
 **返回**：
 - AI 生成的综合回答
 - 相关来源链接列表
+
+**多轮对话示例**：
+```
+# 首次搜索
+google_ai_search(query="Python 异步编程最佳实践")
+
+# 追问深挖（设置 follow_up: true）
+google_ai_search(query="asyncio 和 threading 有什么区别？", follow_up=true)
+```
 
 ## 开发
 

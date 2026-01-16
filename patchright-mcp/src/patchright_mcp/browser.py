@@ -113,13 +113,13 @@ class PatchrightBrowser:
         project_data = os.path.join(base, "browser_data")
         os.makedirs(project_data, exist_ok=True)
         return project_data
-        
-        # 最后：创建项目内目录
-        os.makedirs(project_data, exist_ok=True)
-        return project_data
     
-    def _get_playwright(self):
-        """获取 Playwright 实例（优先 Patchright）"""
+    def _get_playwright(self) -> type:
+        """获取 Playwright 实例（优先 Patchright）
+        
+        Returns:
+            sync_playwright context manager class
+        """
         try:
             from patchright.sync_api import sync_playwright
             return sync_playwright

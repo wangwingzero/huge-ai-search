@@ -23,6 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.urls]
+Repository = "https://github.com/user/patchright-mcp"
+Issues = "https://github.com/user/patchright-mcp/issues"
+
 dependencies = [
     "mcp>=1.0.0",
     "patchright>=1.0.0",
