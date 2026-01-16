@@ -177,6 +177,7 @@ class GoogleAISearcher:
         
         # 持久化浏览器会话（用于多轮对话）
         self._playwright = None
+        self._browser = None
         self._context = None
         self._page = None
         self._session_active = False
@@ -192,17 +193,17 @@ class GoogleAISearcher:
     def _find_browser(self) -> Optional[str]:
         """查找可用的浏览器
         
-        优先检测 Edge（Windows 预装），然后检测 Chrome。
+        优先检测 Chrome（用于持久化会话，避免与日常使用的 Edge 冲突），然后检测 Edge。
         
         Returns:
             浏览器可执行文件路径，未找到返回 None
         """
-        # 优先 Edge（Windows 预装）
-        for path in self.EDGE_PATHS:
+        # 优先 Chrome（用于持久化会话，不与日常 Edge 冲突）
+        for path in self.CHROME_PATHS:
             if os.path.exists(path):
                 return path
-        # 然后 Chrome
-        for path in self.CHROME_PATHS:
+        # 备用 Edge
+        for path in self.EDGE_PATHS:
             if os.path.exists(path):
                 return path
         return None
@@ -210,18 +211,16 @@ class GoogleAISearcher:
     def _get_user_data_dir(self) -> Optional[str]:
         """获取用户数据目录
         
-        优先使用项目内的 browser_data 目录（已保存登录状态）
+        使用专用的 Chrome 数据目录，避免与 Edge 冲突
         """
-        # 优先使用项目内的 browser_data 目录
-        project_data = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "browser_data")
-        if os.path.exists(project_data):
-            return project_data
-        
-        # 备用：Edge 用户数据目录
-        edge_user_data = os.path.expanduser(r"~\AppData\Local\Microsoft\Edge\User Data")
-        if os.path.exists(edge_user_data):
-            return edge_user_data
-        return None
+        # 使用专用的 Chrome 数据目录
+        chrome_data = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+            "chrome_browser_data"
+        )
+        # 确保目录存在
+        os.makedirs(chrome_data, exist_ok=True)
+        return chrome_data
     
     def has_active_session(self) -> bool:
         """检查是否有活跃的浏览器会话
@@ -264,6 +263,13 @@ class GoogleAISearcher:
             except Exception as e:
                 logger.debug(f"关闭上下文时出错: {e}")
             self._context = None
+        
+        if hasattr(self, '_browser') and self._browser:
+            try:
+                self._browser.close()
+            except Exception as e:
+                logger.debug(f"关闭浏览器时出错: {e}")
+            self._browser = None
         
         if self._playwright:
             try:
@@ -315,17 +321,12 @@ class GoogleAISearcher:
             if proxy_server:
                 logger.info(f"检测到系统代理: {proxy_server}")
             
-            user_data_dir = self._user_data_dir or os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                "browser_data"
-            )
-            
+            # 使用持久化上下文（Chrome，不与日常 Edge 冲突）
             launch_options = {
-                "user_data_dir": user_data_dir,
+                "user_data_dir": self._user_data_dir,
                 "executable_path": self._browser_path,
                 "headless": self.headless,
                 "args": launch_args,
-                "channel": 'msedge',
                 "viewport": {'width': 1920, 'height': 1080},
             }
             
@@ -704,9 +705,9 @@ class GoogleAISearcher:
             # 检测代理
             proxy_server = self._detect_proxy()
             
-            # 构建启动选项
+            # 使用持久化上下文（Chrome，不与日常 Edge 冲突）
             launch_options = {
-                "user_data_dir": self._user_data_dir or os.path.join(os.path.dirname(__file__), "..", "..", "browser_data"),
+                "user_data_dir": self._user_data_dir,
                 "executable_path": self._browser_path,
                 "headless": False,  # 必须显示窗口让用户操作
                 "args": [
