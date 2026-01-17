@@ -10,6 +10,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
+# 应用 nest_asyncio 允许嵌套事件循环（解决 Playwright sync API 与 asyncio 冲突）
+import nest_asyncio
+nest_asyncio.apply()
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -29,7 +33,25 @@ server = Server("google-ai-search")
 searcher = GoogleAISearcher(headless=True, use_user_data=True, timeout=60)
 
 # 线程池用于运行同步的 Playwright 代码
+# 最佳实践：在应用启动时初始化全局 Executor，不要每次调用都创建
 _executor = ThreadPoolExecutor(max_workers=1)
+
+# 并发控制：使用 Semaphore 限制同时进行的搜索数量，防止线程池耗尽
+# 最佳实践：限制并发提交数量，避免任务队列无限堆积
+_search_semaphore: Optional[asyncio.Semaphore] = None
+_MAX_CONCURRENT_SEARCHES = 2  # 最大并发搜索数
+
+# 搜索超时时间（秒）- 防止任务永久阻塞
+_SEARCH_TIMEOUT_SECONDS = 120
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """获取或创建 Semaphore（延迟初始化，确保在正确的事件循环中创建）"""
+    global _search_semaphore
+    if _search_semaphore is None:
+        _search_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SEARCHES)
+    return _search_semaphore
+
 
 # 登录超时冷却机制
 # 注意：MCP 服务器无法检测"对话结束"事件，因为它是持久运行的进程
@@ -224,19 +246,39 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             logger.info("冷却期已过，重置状态")
             _login_timeout_timestamp = None
     
-    # 在线程池中执行同步的 Playwright 搜索
-    logger.info(f"开始执行搜索: query='{query}', language={language}, follow_up={follow_up}")
-    loop = asyncio.get_running_loop()
+    # 使用 Semaphore 限制并发搜索数量（最佳实践：防止线程池耗尽）
+    semaphore = _get_semaphore()
+    
+    # 尝试获取信号量，如果已满则等待
+    logger.info(f"等待获取搜索槽位（当前限制: {_MAX_CONCURRENT_SEARCHES}）")
     
     try:
-        # 根据 follow_up 参数决定使用哪个方法
-        if follow_up and searcher.has_active_session():
-            logger.info("使用追问模式（continue_conversation）")
-            result = await loop.run_in_executor(_executor, searcher.continue_conversation, query)
-        else:
-            if follow_up:
-                logger.info("请求追问但没有活跃会话，使用普通搜索")
-            result = await loop.run_in_executor(_executor, searcher.search, query, language)
+        async with semaphore:
+            logger.info(f"获取到搜索槽位，开始执行搜索: query='{query}', language={language}, follow_up={follow_up}")
+            loop = asyncio.get_running_loop()
+            
+            # 使用 asyncio.wait_for 设置超时（最佳实践：防止任务永久阻塞）
+            try:
+                if follow_up and searcher.has_active_session():
+                    # 追问模式：保持会话继续对话
+                    logger.info("使用追问模式（continue_conversation）")
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(_executor, searcher.continue_conversation, query),
+                        timeout=_SEARCH_TIMEOUT_SECONDS
+                    )
+                else:
+                    if follow_up:
+                        logger.info("请求追问但没有活跃会话，使用新搜索")
+                    # 新搜索
+                    logger.info("使用线程池执行新搜索")
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(_executor, searcher.search, query, language),
+                        timeout=_SEARCH_TIMEOUT_SECONDS
+                    )
+            except asyncio.TimeoutError:
+                logger.error(f"搜索超时（{_SEARCH_TIMEOUT_SECONDS}秒）")
+                return [TextContent(type="text", text=f"搜索超时（{_SEARCH_TIMEOUT_SECONDS}秒），请稍后重试")]
+                
     except Exception as e:
         logger.error(f"搜索执行异常: {type(e).__name__}: {e}")
         return [TextContent(type="text", text=f"搜索执行异常: {e}")]

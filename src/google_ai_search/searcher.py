@@ -208,19 +208,161 @@ class GoogleAISearcher:
                 return path
         return None
     
-    def _get_user_data_dir(self) -> Optional[str]:
+    def _get_user_data_dir(self, unique: bool = False) -> Optional[str]:
         """获取用户数据目录
         
-        使用专用的 Edge 数据目录（edge_browser_data），不影响用户日常使用的 Edge
+        Args:
+            unique: 是否使用唯一目录（用于多进程场景）
+        
+        使用专用的 Edge 数据目录（edge_browser_data），不影响用户日常使用的 Edge。
+        当 unique=True 时，创建带 PID 后缀的临时目录，避免多进程冲突。
         """
-        # 使用专用的 Edge 数据目录，与用户日常 Edge 隔离
-        edge_data = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-            "edge_browser_data"
-        )
-        # 确保目录存在
-        os.makedirs(edge_data, exist_ok=True)
-        return edge_data
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        
+        if unique:
+            # 多进程模式：使用带 PID 的临时目录
+            temp_dir = os.path.join(base_dir, "edge_browser_temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # 清理旧的临时目录（超过 1 小时的）
+            self._cleanup_old_temp_dirs(temp_dir, max_age_hours=1)
+            
+            # 使用 PID 确保每个进程有独立目录
+            unique_dir = os.path.join(temp_dir, f"session_{os.getpid()}")
+            os.makedirs(unique_dir, exist_ok=True)
+            return unique_dir
+        else:
+            # 单进程模式：使用共享目录（保持登录状态）
+            edge_data = os.path.join(base_dir, "edge_browser_data")
+            os.makedirs(edge_data, exist_ok=True)
+            return edge_data
+    
+    def _cleanup_old_temp_dirs(self, temp_dir: str, max_age_hours: int = 1) -> None:
+        """清理旧的临时目录
+        
+        Args:
+            temp_dir: 临时目录父路径
+            max_age_hours: 最大保留时间（小时）
+        """
+        try:
+            import shutil
+            cutoff = time.time() - (max_age_hours * 3600)
+            
+            for item in os.listdir(temp_dir):
+                if not item.startswith("session_"):
+                    continue
+                
+                item_path = os.path.join(temp_dir, item)
+                if not os.path.isdir(item_path):
+                    continue
+                
+                try:
+                    # 检查目录修改时间
+                    mtime = os.path.getmtime(item_path)
+                    if mtime < cutoff:
+                        # 检查进程是否还在运行
+                        pid_str = item.replace("session_", "")
+                        if pid_str.isdigit():
+                            pid = int(pid_str)
+                            if not self._is_process_running(pid):
+                                logger.debug(f"清理旧临时目录: {item}")
+                                shutil.rmtree(item_path, ignore_errors=True)
+                except Exception as e:
+                    logger.debug(f"清理目录 {item} 失败: {e}")
+        except Exception as e:
+            logger.debug(f"清理临时目录失败: {e}")
+    
+    def _is_process_running(self, pid: int) -> bool:
+        """检查进程是否还在运行
+        
+        Args:
+            pid: 进程 ID
+            
+        Returns:
+            进程是否运行中
+        """
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            # 如果无法检查，假设进程不在运行
+            return False
+    
+    def _get_storage_state_path(self) -> str:
+        """获取认证状态文件路径
+        
+        使用 storageState 文件在多进程间共享登录状态。
+        """
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        return os.path.join(base_dir, "edge_browser_data", "storage_state.json")
+    
+    def _save_storage_state(self, context) -> bool:
+        """保存认证状态到文件
+        
+        使用临时文件 + 原子重命名避免多进程写入冲突。
+        
+        Args:
+            context: Playwright BrowserContext
+            
+        Returns:
+            是否保存成功
+        """
+        try:
+            state_path = self._get_storage_state_path()
+            os.makedirs(os.path.dirname(state_path), exist_ok=True)
+            
+            # 使用临时文件 + 原子重命名，避免多进程写入冲突
+            temp_path = f"{state_path}.{os.getpid()}.tmp"
+            context.storage_state(path=temp_path)
+            
+            # 原子重命名（Windows 上需要先删除目标文件）
+            try:
+                os.replace(temp_path, state_path)
+            except OSError:
+                # Windows 兼容：如果 replace 失败，尝试删除后重命名
+                if os.path.exists(state_path):
+                    os.remove(state_path)
+                os.rename(temp_path, state_path)
+            
+            logger.info(f"已保存认证状态到: {state_path}")
+            return True
+        except Exception as e:
+            logger.warning(f"保存认证状态失败: {e}")
+            # 清理临时文件
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+            return False
+    
+    def _load_storage_state(self) -> Optional[str]:
+        """加载认证状态文件路径（如果存在）
+        
+        Returns:
+            状态文件路径，不存在返回 None
+        """
+        state_path = self._get_storage_state_path()
+        if os.path.exists(state_path):
+            # 检查文件是否过期（超过 24 小时）
+            try:
+                mtime = os.path.getmtime(state_path)
+                age_hours = (time.time() - mtime) / 3600
+                if age_hours > 24:
+                    logger.info(f"认证状态文件已过期（{age_hours:.1f}小时），将重新登录")
+                    return None
+                logger.info(f"加载认证状态文件: {state_path}")
+                return state_path
+            except Exception as e:
+                logger.warning(f"检查认证状态文件失败: {e}")
+                return None
+        return None
     
     def has_active_session(self) -> bool:
         """检查是否有活跃的浏览器会话
@@ -264,6 +406,7 @@ class GoogleAISearcher:
                 logger.debug(f"关闭上下文时出错: {e}")
             self._context = None
         
+        # 关闭浏览器实例（多进程模式下使用）
         if hasattr(self, '_browser') and self._browser:
             try:
                 self._browser.close()
@@ -321,20 +464,43 @@ class GoogleAISearcher:
             if proxy_server:
                 logger.info(f"检测到系统代理: {proxy_server}")
             
-            # 使用持久化上下文（Chrome，不与日常 Edge 冲突）
+            # 使用普通浏览器 + storage_state 共享登录状态
+            # 这样多个 Kiro 窗口可以同时使用（不会锁定用户数据目录）
+            logger.info("使用独立浏览器实例 + 共享 storage_state（支持多窗口并发）")
+            
             launch_options = {
-                "user_data_dir": self._user_data_dir,
                 "executable_path": self._browser_path,
                 "headless": self.headless,
                 "args": launch_args,
-                "viewport": {'width': 1920, 'height': 1080},
             }
             
             if proxy_server:
                 launch_options["proxy"] = {"server": proxy_server}
             
-            self._context = self._playwright.chromium.launch_persistent_context(**launch_options)
+            self._browser = self._playwright.chromium.launch(**launch_options)
+            
+            # 创建上下文时加载共享的 storage_state
+            context_options = {
+                "viewport": {'width': 1920, 'height': 1080},
+                "user_agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+                "locale": language,
+            }
+            
+            # 尝试加载共享的认证状态
+            storage_state_path = self._load_storage_state()
+            if storage_state_path:
+                context_options["storage_state"] = storage_state_path
+                logger.info(f"已加载共享认证状态: {storage_state_path}")
+            else:
+                logger.info("无共享认证状态，使用新会话")
+            
+            self._context = self._browser.new_context(**context_options)
+            
             self._page = self._context.new_page()
+            
+            # 最佳实践：拦截无用资源（图片、字体、CSS）加速页面加载、降低内存
+            self._setup_resource_interception(self._page)
+            
             self._session_active = True
             self._last_activity_time = time.time()
             
@@ -354,6 +520,57 @@ class GoogleAISearcher:
         "Generating",
         "Loading",
     ]
+    
+    # 需要拦截的资源类型（最佳实践：降低内存和带宽消耗）
+    BLOCKED_RESOURCE_TYPES = {'image', 'font', 'media'}
+    # 需要拦截的 URL 模式（广告、追踪等）
+    BLOCKED_URL_PATTERNS = [
+        'googleadservices.com',
+        'googlesyndication.com',
+        'doubleclick.net',
+        'google-analytics.com',
+        'googletagmanager.com',
+        'facebook.com/tr',
+        'connect.facebook.net',
+    ]
+    
+    def _setup_resource_interception(self, page: "Page") -> None:
+        """设置资源拦截，加速页面加载
+        
+        最佳实践：拦截图片、字体、广告等无用资源，降低内存和带宽消耗。
+        
+        Args:
+            page: Playwright Page 对象
+        """
+        def handle_route(route):
+            try:
+                request = route.request
+                resource_type = request.resource_type
+                url = request.url
+                
+                # 拦截无用资源类型
+                if resource_type in self.BLOCKED_RESOURCE_TYPES:
+                    route.abort()
+                    return
+                
+                # 拦截广告和追踪脚本
+                for pattern in self.BLOCKED_URL_PATTERNS:
+                    if pattern in url:
+                        route.abort()
+                        return
+                
+                # 放行其他请求
+                route.continue_()
+            except Exception:
+                # 忽略路由处理中的异常（页面可能已关闭）
+                pass
+        
+        try:
+            # 拦截所有请求
+            page.route('**/*', handle_route)
+            logger.debug("已设置资源拦截（图片、字体、广告）")
+        except Exception as e:
+            logger.warning(f"设置资源拦截失败: {e}")
     
     def _wait_for_streaming_complete(self, page, max_wait_seconds: int = 30) -> bool:
         """等待 AI 流式输出完成
@@ -998,6 +1215,10 @@ class GoogleAISearcher:
             # 保存回答用于增量提取
             self._last_ai_answer = result.ai_answer
             self._last_activity_time = time.time()
+            
+            # 搜索成功后保存认证状态（供其他 Kiro 窗口使用）
+            if result.success and self._context:
+                self._save_storage_state(self._context)
             
             logger.info(f"搜索完成: success={result.success}, ai_answer长度={len(result.ai_answer)}")
             return result
