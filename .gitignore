@@ -29,6 +29,7 @@ ENV/
 browser_data/
 chrome_browser_data/
 edge_browser_data/
+edge_browser_temp/
 
 # IDE
 .idea/

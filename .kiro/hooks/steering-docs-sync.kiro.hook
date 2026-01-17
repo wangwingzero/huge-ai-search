@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Steering 文档同步",
+  "description": "任务完成后检查 steering 文档是否需要更新",
+  "version": "1.0.0",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "检查 .kiro/steering/ 下的文档是否需要更新：\n\n1. product.md - 有新功能或功能变更？\n2. structure.md - 有新模块或目录结构变化？\n3. tech.md - 有新依赖或技术栈变化？\n4. mcp-tools.md - MCP 工具用法有变化？\n\n检查规则：\n- 只关注本次实际修改的代码\n- 如需更新，直接修改对应文件\n- 如无需更新，不要回复任何内容"
+  }
+}
