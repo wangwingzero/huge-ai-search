@@ -23,7 +23,9 @@ cd google-ai-search-mcp
 2. 安装项目（pip install -e .）
 3. 安装浏览器驱动（patchright install msedge）
 4. 获取项目绝对路径，根据我使用的 AI 工具配置 MCP（参考下方配置路径）
-5. 完成后提醒我重启 AI 工具
+5. 完成后提醒我：
+   - 运行 python login_edge.py 登录 Google 账号
+   - 重启 AI 工具
 ```
 
 ---
@@ -125,20 +127,42 @@ codex mcp add google-ai-search -- 项目路径/.venv/Scripts/python.exe -m googl
 ## 手动安装
 
 ```bash
+# 1. 克隆项目
+git clone https://github.com/wangwingzero/google-ai-search-mcp.git
 cd google-ai-search-mcp
 
-# 创建虚拟环境
+# 2. 创建虚拟环境
 python -m venv .venv
 
-# 激活（Windows）
+# 3. 激活虚拟环境
+# Windows:
 .venv\Scripts\activate
-# 激活（Mac/Linux）
+# Mac/Linux:
 # source .venv/bin/activate
 
-# 安装
+# 4. 安装依赖
 pip install -e .
+
+# 5. 安装浏览器驱动
 patchright install msedge
+
+# 6. 首次登录（重要！）
+python login_edge.py
 ```
+
+## ⚠️ 首次登录（必须）
+
+安装完成后，**必须先运行登录脚本**保存 Google 账号登录状态：
+
+```bash
+python login_edge.py
+```
+
+这会打开 Edge 浏览器，请手动登录你的 Google 账号，登录成功后关闭浏览器即可。
+
+登录状态会保存到 `edge_browser_data/` 目录，之后 MCP 服务器会自动使用这个登录状态。
+
+> 💡 如果你更喜欢用 Chrome，可以运行 `python login_chrome.py`
 
 ## 使用方法
 
@@ -147,7 +171,7 @@ patchright install msedge
 请用 Google 搜索：什么是量子计算
 ```
 
-**首次使用会弹出浏览器窗口**，如果遇到验证码请手动完成，之后就不需要了。
+首次搜索时如果遇到验证码，会弹出浏览器窗口，手动完成验证即可。
 
 ## 工具参数
 
@@ -156,6 +180,31 @@ patchright install msedge
 | query | ✅ | - | 搜索问题 |
 | language | ❌ | zh-CN | 语言代码 |
 | follow_up | ❌ | false | 是否追问 |
+
+## 常见问题
+
+### ModuleNotFoundError: No module named 'patchright'
+
+依赖未安装。请确保：
+1. 已激活虚拟环境：`.venv\Scripts\activate`
+2. 已安装依赖：`pip install -e .`
+
+### 搜索失败或返回空结果
+
+1. 确认已运行 `python login_edge.py` 登录 Google 账号
+2. 检查 `edge_browser_data/` 目录是否存在
+3. 如果登录状态过期，重新运行登录脚本
+
+### 浏览器驱动问题
+
+```bash
+# 重新安装浏览器驱动
+patchright install msedge
+
+# 或使用 Chrome
+patchright install chromium
+python login_chrome.py
+```
 
 ## License
 
