@@ -4,7 +4,16 @@
 
 ## 🚀 一键安装（推荐）
 
-**Clone 项目后，把下面这段话复制给你的 AI 助手，它会自动完成所有配置：**
+### 第一步：下载项目
+
+```bash
+git clone https://github.com/wangwingzero/google-ai-search-mcp.git
+cd google-ai-search-mcp
+```
+
+### 第二步：让 AI 自动配置
+
+把下面这段话复制给你的 AI 助手，它会自动完成所有配置：
 
 ```
 请帮我安装配置当前目录的 google-ai-search-mcp 项目。
