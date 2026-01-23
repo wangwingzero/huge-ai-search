@@ -99,6 +99,27 @@ cd google-ai-search-mcp
 claude mcp add google-ai-search 项目路径/.venv/bin/python -- -m google_ai_search.server
 ```
 
+### OpenAI Codex CLI
+
+先安装 Codex CLI（需要 Node.js）：
+```bash
+npm install -g @openai/codex
+```
+
+配置文件：`~/.codex/config.toml`（Windows: `%USERPROFILE%\.codex\config.toml`）
+
+```toml
+[mcp_servers.google-ai-search]
+command = "项目路径/.venv/Scripts/python.exe"
+args = ["-m", "google_ai_search.server"]
+env = { PYTHONPATH = "项目路径/src" }
+```
+
+或用命令添加：
+```bash
+codex mcp add google-ai-search -- 项目路径/.venv/Scripts/python.exe -m google_ai_search.server
+```
+
 ---
 
 ## 手动安装
