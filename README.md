@@ -69,22 +69,6 @@
 
 或通过 GUI：Settings → Cursor Settings → Features → MCP Servers
 
-### Claude Desktop
-
-配置文件：`%APPDATA%\Claude\claude_desktop_config.json`（Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`）
-
-```json
-{
-  "mcpServers": {
-    "google-ai-search": {
-      "command": "项目路径/.venv/Scripts/python.exe",
-      "args": ["-m", "google_ai_search.server"],
-      "cwd": "项目路径/src"
-    }
-  }
-}
-```
-
 ### Claude Code (CLI)
 
 配置文件：`~/.claude.json` 或项目目录下 `.mcp.json`
@@ -105,24 +89,6 @@
 ```bash
 claude mcp add google-ai-search 项目路径/.venv/bin/python -- -m google_ai_search.server
 ```
-
-### VS Code + GitHub Copilot
-
-配置文件：`~/.vscode/mcp.json` 或项目目录下 `.vscode/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "google-ai-search": {
-      "command": "项目路径/.venv/Scripts/python.exe",
-      "args": ["-m", "google_ai_search.server"],
-      "cwd": "项目路径/src"
-    }
-  }
-}
-```
-
-或通过命令面板：`MCP: Add Server`
 
 ---
 
