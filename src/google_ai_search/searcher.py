@@ -1489,6 +1489,14 @@ class GoogleAISearcher:
             const aiModeLabels = ['AI 模式', 'AI Mode', 'AI モード', 'AI 모드', 'KI-Modus', 'Mode IA'];
             // 多语言支持：搜索结果标签
             const searchResultLabels = ['搜索结果', 'Search Results', '検索結果', '검색결과', 'Suchergebnisse', 'Résultats de recherche'];
+            // 多语言支持：内容结束标记（页脚、相关搜索、反馈区域等）
+            const endMarkers = [
+                '相关搜索', 'Related searches', '関連する検索', '관련 검색',
+                '意见反馈', 'Send feedback', 'フィードバックを送信',
+                '帮助', 'Help', 'ヘルプ',
+                '隐私权', 'Privacy', 'プライバシー',
+                '条款', 'Terms', '利用規約',
+            ];
             // 多语言支持：需要清理的导航文本
             const navPatterns = [
                 // 中文
@@ -1546,6 +1554,31 @@ class GoogleAISearcher:
                 /Connexion/gi,
             ];
             
+            // 硬编码上限：防止异常情况下提取过多内容（50KB，约 2.5 万汉字）
+            const MAX_CONTENT_LENGTH = 50000;
+            
+            // 辅助函数：查找最近的结束标记位置（带硬编码上限）
+            function findEndIndex(startPos) {
+                // 硬编码上限作为最后防线
+                let endIdx = Math.min(mainContent.length, startPos + MAX_CONTENT_LENGTH);
+                for (const marker of endMarkers) {
+                    const idx = mainContent.indexOf(marker, startPos);
+                    if (idx !== -1 && idx < endIdx) {
+                        endIdx = idx;
+                    }
+                }
+                return endIdx;
+            }
+            
+            // 辅助函数：清理导航文本
+            function cleanAnswer(text) {
+                let cleaned = text;
+                for (const pattern of navPatterns) {
+                    cleaned = cleaned.replace(pattern, '');
+                }
+                return cleaned.trim();
+            }
+            
             // 查找 AI 回答区域的起始位置
             let aiModeIndex = -1;
             for (const label of aiModeLabels) {
@@ -1569,37 +1602,16 @@ class GoogleAISearcher:
             }
             
             if (aiModeIndex !== -1 && searchResultIndex !== -1) {
-                let answer = mainContent.substring(aiModeIndex, searchResultIndex);
-                
-                // 清理不需要的内容
-                for (const pattern of navPatterns) {
-                    answer = answer.replace(pattern, '');
-                }
-                answer = answer.trim();
-                
-                result.aiAnswer = answer;
+                // 找到 AI 模式和搜索结果标签，取中间内容
+                result.aiAnswer = cleanAnswer(mainContent.substring(aiModeIndex, searchResultIndex));
             } else if (aiModeIndex !== -1) {
-                // 只找到 AI 模式标签，取后面的内容
-                let answer = mainContent.substring(aiModeIndex, Math.min(aiModeIndex + 8000, mainContent.length));
-                
-                // 清理不需要的内容
-                for (const pattern of navPatterns) {
-                    answer = answer.replace(pattern, '');
-                }
-                answer = answer.trim();
-                
-                result.aiAnswer = answer;
+                // 只找到 AI 模式标签，取到结束标记
+                const endIndex = findEndIndex(aiModeIndex + 100);
+                result.aiAnswer = cleanAnswer(mainContent.substring(aiModeIndex, endIndex));
             } else {
-                // 备用方案：直接获取主要文本，但清理导航元素
-                let answer = mainContent.substring(0, 5000);
-                
-                // 清理不需要的内容
-                for (const pattern of navPatterns) {
-                    answer = answer.replace(pattern, '');
-                }
-                answer = answer.trim();
-                
-                result.aiAnswer = answer;
+                // 备用方案：取到结束标记
+                const endIndex = findEndIndex(100);
+                result.aiAnswer = cleanAnswer(mainContent.substring(0, endIndex));
             }
             
             // 提取来源链接
