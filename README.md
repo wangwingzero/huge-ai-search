@@ -13,10 +13,7 @@
 1. 创建并激活虚拟环境（python -m venv .venv）
 2. 安装项目（pip install -e .）
 3. 安装浏览器驱动（patchright install msedge）
-4. 获取项目绝对路径，配置 MCP：
-   - Kiro 配置文件：~/.kiro/settings/mcp.json
-   - Claude 配置文件：%APPDATA%\Claude\claude_desktop_config.json
-   - 添加 google-ai-search 服务，command 用 .venv 里的 python 绝对路径，cwd 用 src 目录绝对路径
+4. 获取项目绝对路径，根据我使用的 AI 工具配置 MCP（参考下方配置路径）
 5. 完成后提醒我重启 AI 工具
 ```
 
@@ -30,11 +27,106 @@
 - 📚 返回 AI 回答和来源链接
 - 🔄 支持多轮对话追问
 
+## 各 AI 工具 MCP 配置
+
+安装完成后，根据你使用的工具选择对应配置：
+
+### Kiro
+
+配置文件：`~/.kiro/settings/mcp.json`（Windows: `C:\Users\用户名\.kiro\settings\mcp.json`）
+
+```json
+{
+  "mcpServers": {
+    "google-ai-search": {
+      "command": "项目路径/.venv/Scripts/python.exe",
+      "args": ["-m", "google_ai_search.server"],
+      "cwd": "项目路径/src"
+    }
+  }
+}
+```
+
+### Cursor
+
+配置文件：
+- 全局：`~/.cursor/mcp.json`（Windows: `%USERPROFILE%\.cursor\mcp.json`）
+- 项目级：`.cursor/mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "google-ai-search": {
+      "command": "项目路径/.venv/Scripts/python.exe",
+      "args": ["-m", "google_ai_search.server"],
+      "env": {
+        "PYTHONPATH": "项目路径/src"
+      }
+    }
+  }
+}
+```
+
+或通过 GUI：Settings → Cursor Settings → Features → MCP Servers
+
+### Claude Desktop
+
+配置文件：`%APPDATA%\Claude\claude_desktop_config.json`（Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`）
+
+```json
+{
+  "mcpServers": {
+    "google-ai-search": {
+      "command": "项目路径/.venv/Scripts/python.exe",
+      "args": ["-m", "google_ai_search.server"],
+      "cwd": "项目路径/src"
+    }
+  }
+}
+```
+
+### Claude Code (CLI)
+
+配置文件：`~/.claude.json` 或项目目录下 `.mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "google-ai-search": {
+      "command": "项目路径/.venv/bin/python",
+      "args": ["-m", "google_ai_search.server"],
+      "cwd": "项目路径/src"
+    }
+  }
+}
+```
+
+或用命令添加：
+```bash
+claude mcp add google-ai-search 项目路径/.venv/bin/python -- -m google_ai_search.server
+```
+
+### VS Code + GitHub Copilot
+
+配置文件：`~/.vscode/mcp.json` 或项目目录下 `.vscode/mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "google-ai-search": {
+      "command": "项目路径/.venv/Scripts/python.exe",
+      "args": ["-m", "google_ai_search.server"],
+      "cwd": "项目路径/src"
+    }
+  }
+}
+```
+
+或通过命令面板：`MCP: Add Server`
+
+---
+
 ## 手动安装
-
-如果 AI 自动配置失败，按以下步骤手动操作：
-
-### 1. 安装依赖
 
 ```bash
 cd google-ai-search-mcp
@@ -52,43 +144,9 @@ pip install -e .
 patchright install msedge
 ```
 
-### 2. 配置 MCP
-
-编辑配置文件，添加以下内容（把路径换成你的实际路径）：
-
-**Kiro** (`~/.kiro/settings/mcp.json`)：
-```json
-{
-  "mcpServers": {
-    "google-ai-search": {
-      "command": "D:/google-ai-search-mcp/.venv/Scripts/python.exe",
-      "args": ["-m", "google_ai_search.server"],
-      "cwd": "D:/google-ai-search-mcp/src"
-    }
-  }
-}
-```
-
-**Claude Desktop** (`%APPDATA%\Claude\claude_desktop_config.json`)：
-```json
-{
-  "mcpServers": {
-    "google-ai-search": {
-      "command": "D:/google-ai-search-mcp/.venv/Scripts/python.exe",
-      "args": ["-m", "google_ai_search.server"],
-      "cwd": "D:/google-ai-search-mcp/src"
-    }
-  }
-}
-```
-
-### 3. 重启 AI 工具
-
-配置完成后重启 Kiro/Claude Desktop 即可使用。
-
 ## 使用方法
 
-直接对 AI 说：
+配置完成后重启 AI 工具，直接对话：
 ```
 请用 Google 搜索：什么是量子计算
 ```
