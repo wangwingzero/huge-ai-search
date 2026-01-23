@@ -53,3 +53,4 @@ patchright install msedge
 ```
 
 然后手动编辑 MCP 配置文件，参考 README.md。
+![1769162230096](image/INSTALL/1769162230096.png)

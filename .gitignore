@@ -52,9 +52,5 @@ logs/
 # Images (screenshots etc)
 image/
 
-# Test files
-test_*.py
-!tests/test_*.py
-login_google.py
-login_edge.py
-setup_browser.py
+# Test files (keep tests/ directory)
+# Root level test/login scripts are now tracked for easier setup
