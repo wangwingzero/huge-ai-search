@@ -11,8 +11,8 @@ from hypothesis import given, strategies as st
 import sys
 sys.path.insert(0, 'src')
 
-from google_ai_search.searcher import SearchResult, SearchSource
-from google_ai_search.server import format_search_result
+from huge_ai_search.searcher import SearchResult, SearchSource
+from huge_ai_search.server import format_search_result
 
 
 class TestFormatSearchResult:
@@ -32,7 +32,7 @@ class TestFormatSearchResult:
         
         output = format_search_result(result)
         
-        assert "## Google AI 搜索结果" in output
+        assert "## 虎哥AI搜索结果" in output
         assert "**查询**: test query" in output
         assert "### AI 回答" in output
         assert "This is the AI answer." in output
@@ -50,7 +50,7 @@ class TestFormatSearchResult:
         
         output = format_search_result(result)
         
-        assert "## Google AI 搜索结果" in output
+        assert "## 虎哥AI搜索结果" in output
         assert "Answer without sources." in output
         assert "### 来源" not in output
     

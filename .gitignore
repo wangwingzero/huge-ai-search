@@ -1,4 +1,10 @@
-# Python
+# Node.js
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
+# Python (in python/ subfolder)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -6,7 +12,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -30,6 +35,7 @@ browser_data/
 chrome_browser_data/
 edge_browser_data/
 edge_browser_temp/
+chrome_browser_temp/
 
 # IDE
 .idea/
@@ -43,14 +49,8 @@ edge_browser_temp/
 htmlcov/
 .hypothesis/
 
-# Kiro specs (optional, can be included)
-# .kiro/
-
 # Logs
 logs/
 
-# Images (screenshots etc)
+# Images
 image/
-
-# Test files (keep tests/ directory)
-# Root level test/login scripts are now tracked for easier setup

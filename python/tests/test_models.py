@@ -11,7 +11,7 @@ from hypothesis import given, strategies as st
 import sys
 sys.path.insert(0, 'src')
 
-from google_ai_search.searcher import SearchSource, SearchResult
+from huge_ai_search.searcher import SearchSource, SearchResult
 
 
 class TestSearchSource:

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, 'src')
 
-from google_ai_search.searcher import GoogleAISearcher
+from huge_ai_search.searcher import GoogleAISearcher
 
 
 class TestURLConstruction:

@@ -1,0 +1,41 @@
+{
+  "name": "huge-ai-search",
+  "version": "1.1.0",
+  "description": "Huge AI Search MCP Server - AI 搜索聚合工具",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "huge-ai-search": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "search",
+    "playwright",
+    "model-context-protocol"
+  ],
+  "author": "wanghui5801",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wanghui5801/huge-ai-search"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "playwright": "^1.40.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

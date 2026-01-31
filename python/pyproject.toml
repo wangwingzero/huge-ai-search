@@ -3,16 +3,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "patchright-mcp"
-version = "0.1.0"
-description = "Patchright MCP Server - 防检测浏览器自动化，可替代 fetch 和 playwright MCP"
+name = "huge-ai-search"
+version = "1.1.0"
+description = "Huge AI Search MCP Server - AI 搜索聚合工具"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Your Name", email = "your@email.com" }
+    { name = "wanghui5801" }
 ]
-keywords = ["mcp", "patchright", "playwright", "browser", "automation", "anti-detection", "stealth"]
+keywords = ["mcp", "ai", "search", "patchright"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -23,14 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-[project.urls]
-Repository = "https://github.com/user/patchright-mcp"
-Issues = "https://github.com/user/patchright-mcp/issues"
-
 dependencies = [
     "mcp>=1.0.0",
     "patchright>=1.0.0",
-    "markdownify>=0.11.0",
+    "nest-asyncio>=1.5.0",
 ]
 
 [project.optional-dependencies]
@@ -41,11 +37,19 @@ dev = [
 ]
 
 [project.scripts]
-patchright-mcp = "patchright_mcp.server:run"
+huge-ai-search = "huge_ai_search.server:run"
+
+[project.urls]
+Homepage = "https://github.com/wanghui5801/huge-ai-search"
+Repository = "https://github.com/wanghui5801/huge-ai-search"
+Issues = "https://github.com/wanghui5801/huge-ai-search/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/patchright_mcp"]
+packages = ["src/huge_ai_search"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.hypothesis]
+max_examples = 100
