@@ -1,24 +1,19 @@
 """
-Google AI Search MCP Server
+Huge AI Search MCP Server
 
-提供 Google AI 搜索功能的 MCP 服务器。
+提供虎哥 AI 搜索功能的 MCP 服务器。
 """
 
 import asyncio
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
-
-# 应用 nest_asyncio 允许嵌套事件循环（解决 Playwright sync API 与 asyncio 冲突）
-import nest_asyncio
-nest_asyncio.apply()
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from .searcher import GoogleAISearcher, SearchResult, logger as searcher_logger
+from .searcher import AsyncGoogleAISearcher, SearchResult, logger as searcher_logger
 
 # 使用与 searcher 相同的日志器
 logger = logging.getLogger("google_ai_search")
@@ -26,23 +21,41 @@ logger.info("MCP Server 模块加载")
 
 
 # 创建 MCP Server
-server = Server("google-ai-search")
+server = Server("huge-ai-search")
 
-# 创建搜索器实例（使用持久化用户数据目录）
-# headless=True 使用 Edge 静默模式（Edge 对 Cookie 支持更好）
-searcher = GoogleAISearcher(headless=True, use_user_data=True, timeout=60)
+# 全局异步搜索器实例（延迟初始化）
+# 使用 AsyncGoogleAISearcher 替代同步的 GoogleAISearcher
+# 默认无头模式（headless=True），使用反检测参数绕过 Google 检测
+searcher: Optional[AsyncGoogleAISearcher] = None
 
-# 线程池用于运行同步的 Playwright 代码
-# 最佳实践：在应用启动时初始化全局 Executor，不要每次调用都创建
-_executor = ThreadPoolExecutor(max_workers=1)
-
-# 并发控制：使用 Semaphore 限制同时进行的搜索数量，防止线程池耗尽
+# 并发控制：使用 Semaphore 限制同时进行的搜索数量
 # 最佳实践：限制并发提交数量，避免任务队列无限堆积
 _search_semaphore: Optional[asyncio.Semaphore] = None
 _MAX_CONCURRENT_SEARCHES = 2  # 最大并发搜索数
 
 # 搜索超时时间（秒）- 防止任务永久阻塞
 _SEARCH_TIMEOUT_SECONDS = 120
+
+
+async def get_searcher() -> AsyncGoogleAISearcher:
+    """Get or create the global async searcher instance
+    
+    延迟初始化全局搜索器实例。使用 AsyncGoogleAISearcher 替代同步版本。
+    
+    Returns:
+        AsyncGoogleAISearcher 实例
+        
+    **Validates: Requirements 11.1**
+    """
+    global searcher
+    if searcher is None:
+        searcher = AsyncGoogleAISearcher(
+            headless=True,  # 无头模式：后台运行
+            use_user_data=True,
+            timeout=60
+        )
+        logger.info("AsyncGoogleAISearcher 实例已创建（无头模式）")
+    return searcher
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -61,118 +74,135 @@ _LOGIN_COOLDOWN_SECONDS = 300  # 冷却时间：5分钟（用户可能回来了�
 
 
 # 工具描述文本
-_TOOL_DESCRIPTION = (
-    "使用 Google AI 模式搜索，获取 AI 总结的搜索结果。\n\n"
-    "🌟🌟🌟 **全能通用搜索工具 - 有任何不确定的事情都可以搜！** 🌟🌟🌟\n\n"
-    "这是你的**首选搜索工具**，适用于几乎所有需要获取外部信息的场景。\n"
-    "不要犹豫，不要等待明确指令 —— 遇到任何不确定的问题，先搜一下确认！\n\n"
-    "🎯 核心原则：用自然语言提问，不要用关键词堆砌！\n"
-    "Google AI 是对话式 AI，像和人说话一样提问效果最好。\n\n"
-    "🚨🚨🚨 **最高优先级规则：Bug/问题排查必须先搜索！** 🚨🚨🚨\n\n"
-    "当用户报告 bug、问题、错误、异常行为时：\n"
-    "1. **第一步**：使用此工具搜索问题的常见原因和解决方案\n"
-    "2. **第二步**：阅读搜索结果，了解业界已知的解决方案\n"
-    "3. **第三步**：再开始读代码、加日志、修改代码\n\n"
-    "**禁止行为**：直接开始读代码调试，跳过搜索步骤！\n\n"
-    "💡 **关键洞察**：很多看起来是「项目特定的 bug」，实际上是「通用的技术问题」。\n"
-    "例如：「追问时返回重复内容」→ 实际是「网页爬虫多轮对话如何只提取新增内容」的通用问题。\n"
-    "搜索后往往能找到业界成熟的解决方案，比自己从零思考更高效。\n\n"
-    "🔥 **强烈建议主动使用的场景**:\n"
-    "- **用户报告 bug/问题/错误** → 必须先搜索常见原因和解决方案！\n"
-    "- 任何你不100%确定的技术问题 → 搜一下确认\n"
-    "- 任何可能有更新的信息 → 搜一下获取最新\n"
-    "- 任何最佳实践/推荐做法 → 搜一下看业界标准\n"
-    "- 任何设计决策 → 搜一下参考行业经验\n"
-    "- 任何错误排查 → 搜一下看解决方案\n"
-    "- 写代码前不确定的 API 用法 → 搜一下确认\n"
-    "- 做技术选型 → 搜一下对比各方案\n"
-    "- **实现某个功能前** → 搜一下看有没有现成的最佳实践\n\n"
-    "🚨 **必须立即搜索的场景**（不要跳过！）:\n"
-    "| 场景 | 搜索示例 |\n"
-    "| 用户报告 bug/问题 | 「PySide6 窗口隐藏后无法再次显示，有哪些常见原因？」 |\n"
-    "| 窗口/UI 行为异常 | 「Qt QMainWindow hide 后 show 不工作，如何解决？」 |\n"
-    "| 数据重复/丢失问题 | 「网页爬虫多轮对话时，如何只提取新增内容？」 |\n"
-    "| 信号/槽不工作 | 「PySide6 信号在窗口隐藏后不触发，是什么原因？」 |\n"
-    "| 内存/资源问题 | 「PySide6 窗口被垃圾回收导致无法显示，如何避免？」 |\n"
-    "| 任何「不工作」的问题 | 先搜索常见原因，再读代码 |\n\n"
-    "触发关键词: 谷歌、Google、搜索、search、查询、查找、搜一下、帮我搜、网上查、"
-    "最新信息、实时信息、最佳实践、best practice、推荐做法、怎么做比较好、业界标准、"
-    "行业规范、UI设计、UX设计、用户体验、界面设计、交互设计、设计规范、设计系统、"
-    "design system、design pattern、组件设计、布局设计、响应式设计、无障碍设计、accessibility、"
-    "bug、问题、错误、不工作、失败、异常、无法、打不开、显示不出来、重复、丢失\n\n"
-    "适用场景（几乎所有需要外部信息的情况）:\n"
-    "- **Bug 排查和问题诊断**（最重要！先搜索再读代码）\n"
-    "- 需要获取最新、实时的信息（如新闻、技术动态、产品发布）\n"
-    "- 需要 AI 总结的综合答案而非原始网页列表\n"
-    "- 查询技术问题、编程问题、API 用法\n"
-    "- 了解某个话题的概述和要点\n"
-    "- 需要带来源引用的可靠信息\n"
-    "- 查询最佳实践、推荐做法、行业标准\n"
-    "- UI/UX 设计最佳实践和设计规范\n"
-    "- 组件设计模式、交互设计指南\n"
-    "- 设计系统参考（Material Design、Ant Design 等）\n"
-    "- 响应式布局和无障碍设计标准\n"
-    "- 错误信息排查和解决方案\n"
-    "- 技术选型和方案对比\n"
-    "- 验证自己的理解是否正确\n\n"
-    "⚠️ 搜索策略指南（重要）:\n"
-    "**宁可多搜也不要凭记忆猜测！** 搜索成本很低，但错误的信息代价很高。\n\n"
-    "✅ 应该搜索（强烈建议）:\n"
-    "- **用户报告的任何 bug/问题**: 先搜索常见原因，再读代码！\n"
-    "- 实时/时效性信息: 最新版本号、近期发布、当前价格、最新动态\n"
-    "- 具体产品/服务细节: 特定 API 的最新用法、某产品的具体配置参数\n"
-    "- 行业最新实践: 2024/2025 年的最佳实践、新兴技术趋势\n"
-    "- 争议性/无定论问题: 不同方案的优劣对比、社区讨论热点\n"
-    "- 小众/冷门知识: 特定框架的边缘用法、罕见错误的解决方案\n"
-    "- **任何你不确定的事情**: 与其猜测，不如花几秒搜索确认\n\n"
-    "❌ 可以不搜索（但搜了也没坏处）:\n"
-    "- 基础概念: 什么是 REST API、JavaScript 闭包原理\n"
-    "- 稳定的语法/用法: Python 列表操作、SQL 基本语法\n"
-    "- 通用设计模式: 单例模式、观察者模式的基本实现\n"
-    "- AI 训练数据内的知识: 经典算法、成熟框架的常规用法\n\n"
-    "💡 提问技巧（从搜索思维转变为指令思维）:\n"
-    "- 用完整的自然语言句子提问，不要堆砌关键词\n"
-    "- 说明具体场景和需求，让 AI 理解你的意图\n"
-    "- 可以要求特定输出格式（如「请列出步骤」、「请对比优缺点」）\n"
-    "- 复杂问题加上「请一步步分析」引导 AI 展示思考过程\n"
-    "- 加上时间限定词（如「2025年」、「最新」）获取时效性信息\n\n"
-    "特点: 使用 Patchright 防检测技术，支持中英文搜索，返回 AI 总结 + 来源链接，支持多轮对话追问。\n\n"
-    "🔄 **多轮对话功能（重要！你需要自主判断）**:\n\n"
-    "你需要根据上下文**自主决定**是追问还是新开对话：\n\n"
-    "✅ **使用 `follow_up: true`（追问）**:\n"
-    "- 对上一个搜索结果需要更多细节或解释\n"
-    "- 想从不同角度深入探讨**同一话题**\n"
-    "- 上一个回答不够完整，需要补充\n"
-    "- 用户说「继续」「详细说说」「还有呢」等追问意图\n"
-    "- 连续相关问题（如：先问 React hooks，再问 useEffect 细节）\n\n"
-    "❌ **使用 `follow_up: false`（新对话）**:\n"
-    "- 完全不同的话题（如：从 React 切换到 Python）\n"
-    "- 用户开始了新的任务或问题\n"
-    "- 需要切换搜索语言\n"
-    "- 距离上次搜索话题已经变了\n"
-    "- 不确定时，默认 false 更安全\n\n"
-    "💡 **判断技巧**：问自己「这个问题和上一个搜索有关联吗？」有关联用 true，无关联用 false。"
-)
+_TOOL_DESCRIPTION = """使用 AI 模式搜索，获取 AI 总结的搜索结果。
 
-_QUERY_DESCRIPTION = (
-    "向 Google AI 提问的自然语言问题。\n\n"
-    "⚠️ 重要：使用完整的自然语言句子提问，而非关键词堆砌！\n\n"
-    "✅ 正确的提问方式（自然语言）:\n"
-    "- 「GitHub push 大文件失败怎么解决？有哪些方案？」\n"
-    "- 「2025年 React 和 Vue 哪个更适合新项目？各有什么优缺点？」\n"
-    "- 「如何在 Python 中实现异步并发？请给出最佳实践和代码示例」\n"
-    "- 「Next.js 14 的 App Router 和 Pages Router 有什么区别？该怎么选择？」\n\n"
-    "❌ 错误的提问方式（关键词堆砌）:\n"
-    "- 「GitHub push 大文件失败 解决方案 2025」\n"
-    "- 「React Vue 对比 2025」\n"
-    "- 「Python asyncio 最佳实践」\n"
-    "- 「Next.js App Router Pages Router 区别」\n\n"
-    "💡 提问技巧:\n"
-    "1. 像和人对话一样提问，用完整句子\n"
-    "2. 说明你的具体场景和需求\n"
-    "3. 可以要求特定格式（如「请列出步骤」、「请对比优缺点」）\n"
-    "4. 复杂问题可以要求「请一步步分析」"
-)
+🌟🌟🌟 **全能通用搜索工具 - 有任何不确定的事情都可以搜！** 🌟🌟🌟
+
+这是你的**首选搜索工具**，适用于几乎所有需要获取外部信息的场景。
+不要犹豫，不要等待明确指令 —— 遇到任何不确定的问题，先搜一下确认！
+
+🎯 核心原则：用自然语言提问，不要用关键词堆砌！
+这是对话式 AI 搜索，像和人说话一样提问效果最好。
+
+🚨🚨🚨 **最高优先级规则：Bug/问题排查必须先搜索！** 🚨🚨🚨
+
+当用户报告 bug、问题、错误、异常行为时：
+1. **第一步**：使用此工具搜索问题的常见原因和解决方案
+2. **第二步**：阅读搜索结果，了解业界已知的解决方案
+3. **第三步**：再开始读代码、加日志、修改代码
+
+**禁止行为**：直接开始读代码调试，跳过搜索步骤！
+
+💡 **关键洞察**：很多看起来是「项目特定的 bug」，实际上是「通用的技术问题」。
+例如：「追问时返回重复内容」→ 实际是「网页爬虫多轮对话如何只提取新增内容」的通用问题。
+搜索后往往能找到业界成熟的解决方案，比自己从零思考更高效。
+
+🔥 **强烈建议主动使用的场景**:
+- **用户报告 bug/问题/错误** → 必须先搜索常见原因和解决方案！
+- 任何你不100%确定的技术问题 → 搜一下确认
+- 任何可能有更新的信息 → 搜一下获取最新
+- 任何最佳实践/推荐做法 → 搜一下看业界标准
+- 任何设计决策 → 搜一下参考行业经验
+- 任何错误排查 → 搜一下看解决方案
+- 写代码前不确定的 API 用法 → 搜一下确认
+- 做技术选型 → 搜一下对比各方案
+- **实现某个功能前** → 搜一下看有没有现成的最佳实践
+
+🚨 **必须立即搜索的场景**（不要跳过！）:
+| 场景 | 搜索示例 |
+| 用户报告 bug/问题 | 「PySide6 窗口隐藏后无法再次显示，有哪些常见原因？」 |
+| 窗口/UI 行为异常 | 「Qt QMainWindow hide 后 show 不工作，如何解决？」 |
+| 数据重复/丢失问题 | 「网页爬虫多轮对话时，如何只提取新增内容？」 |
+| 信号/槽不工作 | 「PySide6 信号在窗口隐藏后不触发，是什么原因？」 |
+| 内存/资源问题 | 「PySide6 窗口被垃圾回收导致无法显示，如何避免？」 |
+| 任何「不工作」的问题 | 先搜索常见原因，再读代码 |
+
+触发关键词: 搜索、search、查询、查找、搜一下、帮我搜、网上查、最新信息、实时信息、最佳实践、best practice、推荐做法、怎么做比较好、业界标准、行业规范、UI设计、UX设计、用户体验、界面设计、交互设计、设计规范、设计系统、design system、design pattern、组件设计、布局设计、响应式设计、无障碍设计、accessibility、bug、问题、错误、不工作、失败、异常、无法、打不开、显示不出来、重复、丢失
+
+适用场景（几乎所有需要外部信息的情况）:
+- **Bug 排查和问题诊断**（最重要！先搜索再读代码）
+- 需要获取最新、实时的信息（如新闻、技术动态、产品发布）
+- 需要 AI 总结的综合答案而非原始网页列表
+- 查询技术问题、编程问题、API 用法
+- 了解某个话题的概述和要点
+- 需要带来源引用的可靠信息
+- 查询最佳实践、推荐做法、行业标准
+- UI/UX 设计最佳实践和设计规范
+- 组件设计模式、交互设计指南
+- 设计系统参考（Material Design、Ant Design 等）
+- 响应式布局和无障碍设计标准
+- 错误信息排查和解决方案
+- 技术选型和方案对比
+- 验证自己的理解是否正确
+
+⚠️ 搜索策略指南（重要）:
+**宁可多搜也不要凭记忆猜测！** 搜索成本很低，但错误的信息代价很高。
+
+✅ 应该搜索（强烈建议）:
+- **用户报告的任何 bug/问题**: 先搜索常见原因，再读代码！
+- 实时/时效性信息: 最新版本号、近期发布、当前价格、最新动态
+- 具体产品/服务细节: 特定 API 的最新用法、某产品的具体配置参数
+- 行业最新实践: 2024/2025 年的最佳实践、新兴技术趋势
+- 争议性/无定论问题: 不同方案的优劣对比、社区讨论热点
+- 小众/冷门知识: 特定框架的边缘用法、罕见错误的解决方案
+- **任何你不确定的事情**: 与其猜测，不如花几秒搜索确认
+
+❌ 可以不搜索（但搜了也没坏处）:
+- 基础概念: 什么是 REST API、JavaScript 闭包原理
+- 稳定的语法/用法: Python 列表操作、SQL 基本语法
+- 通用设计模式: 单例模式、观察者模式的基本实现
+- AI 训练数据内的知识: 经典算法、成熟框架的常规用法
+
+💡 提问技巧（从搜索思维转变为指令思维）:
+- 用完整的自然语言句子提问，不要堆砌关键词
+- 说明具体场景和需求，让 AI 理解你的意图
+- 可以要求特定输出格式（如「请列出步骤」、「请对比优缺点」）
+- 复杂问题加上「请一步步分析」引导 AI 展示思考过程
+- 加上时间限定词（如「2025年」、「最新」）获取时效性信息
+
+特点: 使用 nodriver 防检测技术，支持中英文搜索，返回 AI 总结 + 来源链接，支持多轮对话追问。
+
+🔄 **多轮对话功能（重要！你需要自主判断）**:
+
+你需要根据上下文**自主决定**是追问还是新开对话：
+
+✅ **使用 `follow_up: true`（追问）**:
+- 对上一个搜索结果需要更多细节或解释
+- 想从不同角度深入探讨**同一话题**
+- 上一个回答不够完整，需要补充
+- 用户说「继续」「详细说说」「还有呢」等追问意图
+- 连续相关问题（如：先问 React hooks，再问 useEffect 细节）
+
+❌ **使用 `follow_up: false`（新对话）**:
+- 完全不同的话题（如：从 React 切换到 Python）
+- 用户开始了新的任务或问题
+- 需要切换搜索语言
+- 距离上次搜索话题已经变了
+- 不确定时，默认 false 更安全
+
+💡 **判断技巧**：问自己「这个问题和上一个搜索有关联吗？」有关联用 true，无关联用 false。"""
+
+_QUERY_DESCRIPTION = """向虎哥 AI 提问的自然语言问题。
+
+⚠️ 重要：使用完整的自然语言句子提问，而非关键词堆砌！
+
+✅ 正确的提问方式（自然语言）:
+- 「GitHub push 大文件失败怎么解决？有哪些方案？」
+- 「2025年 React 和 Vue 哪个更适合新项目？各有什么优缺点？」
+- 「如何在 Python 中实现异步并发？请给出最佳实践和代码示例」
+- 「Next.js 14 的 App Router 和 Pages Router 有什么区别？该怎么选择？」
+
+❌ 错误的提问方式（关键词堆砌）:
+- 「GitHub push 大文件失败 解决方案 2025」
+- 「React Vue 对比 2025」
+- 「Python asyncio 最佳实践」
+- 「Next.js App Router Pages Router 区别」
+
+💡 提问技巧:
+1. 像和人对话一样提问，用完整句子
+2. 说明你的具体场景和需求
+3. 可以要求特定格式（如「请列出步骤」、「请对比优缺点」）
+4. 复杂问题可以要求「请一步步分析」"""
 
 
 @server.list_tools()
@@ -180,7 +210,7 @@ async def list_tools() -> list[Tool]:
     """列出可用的工具"""
     return [
         Tool(
-            name="google_ai_search",
+            name="huge_ai_search",
             description=_TOOL_DESCRIPTION,
             inputSchema={
                 "type": "object",
@@ -209,12 +239,17 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """执行工具调用"""
+    """执行工具调用
+    
+    直接调用异步搜索器，不再需要 ThreadPoolExecutor 和 run_in_executor。
+    
+    **Validates: Requirements 11.1**
+    """
     global _login_timeout_timestamp
     
     logger.info(f"收到工具调用: name={name}, arguments={arguments}")
     
-    if name != "google_ai_search":
+    if name != "huge_ai_search":
         logger.error(f"未知工具: {name}")
         raise ValueError(f"未知工具: {name}")
     
@@ -246,7 +281,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             logger.info("冷却期已过，重置状态")
             _login_timeout_timestamp = None
     
-    # 使用 Semaphore 限制并发搜索数量（最佳实践：防止线程池耗尽）
+    # 使用 Semaphore 限制并发搜索数量（最佳实践：防止资源耗尽）
     semaphore = _get_semaphore()
     
     # 尝试获取信号量，如果已满则等待
@@ -255,24 +290,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         async with semaphore:
             logger.info(f"获取到搜索槽位，开始执行搜索: query='{query}', language={language}, follow_up={follow_up}")
-            loop = asyncio.get_running_loop()
+            
+            # 获取异步搜索器实例
+            async_searcher = await get_searcher()
             
             # 使用 asyncio.wait_for 设置超时（最佳实践：防止任务永久阻塞）
             try:
-                if follow_up and searcher.has_active_session():
+                if follow_up and async_searcher.has_active_session():
                     # 追问模式：保持会话继续对话
+                    # 直接调用异步方法，不再需要 run_in_executor
                     logger.info("使用追问模式（continue_conversation）")
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(_executor, searcher.continue_conversation, query),
+                        async_searcher.continue_conversation(query),
                         timeout=_SEARCH_TIMEOUT_SECONDS
                     )
                 else:
                     if follow_up:
                         logger.info("请求追问但没有活跃会话，使用新搜索")
-                    # 新搜索
-                    logger.info("使用线程池执行新搜索")
+                    # 新搜索 - 直接调用异步方法
+                    logger.info("执行新搜索")
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(_executor, searcher.search, query, language),
+                        async_searcher.search(query, language),
                         timeout=_SEARCH_TIMEOUT_SECONDS
                     )
             except asyncio.TimeoutError:
@@ -341,9 +379,9 @@ def format_search_result(result: SearchResult, is_follow_up: bool = False) -> st
         Markdown 格式的字符串
     """
     if is_follow_up:
-        output = f"## Google AI 追问结果\n\n"
+        output = "## AI 追问结果\n\n"
     else:
-        output = f"## Google AI 搜索结果\n\n"
+        output = "## AI 搜索结果\n\n"
     
     output += f"**查询**: {result.query}\n\n"
     output += f"### AI 回答\n\n{result.ai_answer}\n\n"
@@ -355,7 +393,7 @@ def format_search_result(result: SearchResult, is_follow_up: bool = False) -> st
     
     # 添加追问提示
     if not is_follow_up:
-        output += f"\n---\n💡 **提示**: 如需深入了解，可以设置 `follow_up: true` 进行追问，AI 会在当前对话上下文中继续回答。\n"
+        output += "\n---\n💡 **提示**: 如需深入了解，可以设置 `follow_up: true` 进行追问，AI 会在当前对话上下文中继续回答。\n"
     
     return output
 

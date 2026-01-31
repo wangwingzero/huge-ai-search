@@ -1,9 +1,9 @@
-"""Google AI Search MCP Server
+"""Huge AI Search MCP Server
 
-使用 Patchright（Playwright 防检测分支）抓取 Google AI 模式搜索结果的 MCP 服务器。
+使用 nodriver（防检测浏览器自动化库）抓取虎哥 AI 模式搜索结果的 MCP 服务器。
 """
 
-from .searcher import GoogleAISearcher, SearchResult, SearchSource
+from .searcher import AsyncGoogleAISearcher, GoogleAISearcher, SearchResult, SearchSource
 
 __version__ = "0.1.0"
-__all__ = ["GoogleAISearcher", "SearchResult", "SearchSource"]
+__all__ = ["AsyncGoogleAISearcher", "GoogleAISearcher", "SearchResult", "SearchSource"]

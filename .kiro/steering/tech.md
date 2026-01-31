@@ -10,7 +10,7 @@
 
 ## Core Dependencies
 - `mcp>=1.0.0` - Model Context Protocol SDK
-- `patchright>=1.0.0` - Anti-detection Playwright fork (falls back to playwright if unavailable)
+- `nodriver>=0.38` - Anti-detection browser automation library
 
 ## Dev Dependencies
 - `pytest>=7.0.0` - Testing framework
@@ -18,8 +18,8 @@
 - `hypothesis>=6.0.0` - Property-based testing
 
 ## Browser Support
-- Microsoft Edge (preferred, Windows pre-installed)
-- Google Chrome (fallback)
+- Chrome (preferred)
+- Microsoft Edge (fallback)
 - Uses persistent user data directory for session persistence
 
 ## Common Commands
@@ -47,7 +47,7 @@ Kiro (`~/.kiro/settings/mcp.json`):
 ```json
 {
   "mcpServers": {
-    "google-ai-search": {
+    "huge-ai-search": {
       "command": "python",
       "args": ["-m", "google_ai_search.server"],
       "cwd": "<project-path>/src"

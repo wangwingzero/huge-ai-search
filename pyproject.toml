@@ -3,16 +3,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "google-ai-search-mcp"
+name = "huge-ai-search"
 version = "1.1.0"
-description = "Google AI Search MCP Server - 使用 Patchright 抓取 Google AI 模式搜索结果"
+description = "Huge AI Search MCP Server - AI 搜索聚合工具"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Your Name", email = "your@email.com" }
+    { name = "wanghui5801" }
 ]
-keywords = ["mcp", "google", "ai", "search", "patchright"]
+keywords = ["mcp", "ai", "search", "nodriver"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -25,8 +25,7 @@ classifiers = [
 
 dependencies = [
     "mcp>=1.0.0",
-    "patchright>=1.0.0",
-    "nest-asyncio>=1.5.0",
+    "nodriver>=0.38",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +36,11 @@ dev = [
 ]
 
 [project.scripts]
-google-ai-search-mcp = "google_ai_search.server:main"
+huge-ai-search = "google_ai_search.server:run"
+
+[project.urls]
+Homepage = "https://github.com/wanghui5801/huge-ai-search"
+Repository = "https://github.com/wanghui5801/huge-ai-search"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/google_ai_search"]

@@ -1,7 +1,6 @@
 # Core dependencies (also defined in pyproject.toml)
 mcp>=1.0.0
-patchright>=1.0.0
-nest-asyncio>=1.5.0
+nodriver>=0.38
 
 # Dev dependencies (optional)
 # pytest>=7.0.0

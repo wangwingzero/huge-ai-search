@@ -27,7 +27,7 @@ inclusion: always
 
 **先知其不可为，方能有所为。**
 
-使用 `mcp_google_ai_search_google_ai_search` 问道：
+使用 `mcp_google_ai_search_huge_ai_search` 问道：
 
 ```
 「{技术} 常见错误和反模式，有哪些坑要避免？」
@@ -41,7 +41,7 @@ inclusion: always
 
 ## 工具
 
-**器**：`mcp_google_ai_search_google_ai_search`
+**器**：`mcp_google_ai_search_huge_ai_search`
 
 **用法**：
 - `query`（必填）：以自然语言问道，勿堆砌关键词
