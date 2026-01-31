@@ -112,11 +112,11 @@ class SearchResult:
 
 class GoogleAISearcher:
     """Google AI 搜索器
-    
+
     使用 Patchright 访问 Google AI 模式（udm=50）获取 AI 总结的搜索结果。
     支持多轮对话：保持浏览器会话，在同一页面追问。
     """
-    
+
     # Chrome 可能的安装路径（跨平台）
     CHROME_PATHS = [
         # Windows
@@ -131,8 +131,8 @@ class GoogleAISearcher:
         "/usr/bin/chromium-browser",
         "/usr/bin/chromium",
     ]
-    
-    # Edge 可能的安装路径（跨平台）- 优先级更高
+
+    # Edge 可能的安装路径（跨平台）- 备用浏览器
     EDGE_PATHS = [
         # Windows
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -143,7 +143,7 @@ class GoogleAISearcher:
         "/usr/bin/microsoft-edge",
         "/usr/bin/microsoft-edge-stable",
     ]
-    
+
     # 验证码检测关键词
     CAPTCHA_KEYWORDS = [
         "异常流量",
@@ -206,50 +206,50 @@ class GoogleAISearcher:
     
     def _find_browser(self) -> Optional[str]:
         """查找可用的浏览器
-        
-        优先检测 Edge（Windows 预装，headless 模式 Cookie 支持更好），然后检测 Chrome。
-        
+
+        优先检测 Chrome，然后检测 Edge 作为备用。
+
         Returns:
             浏览器可执行文件路径，未找到返回 None
         """
-        # 优先 Edge（headless 模式下 Cookie 支持更好）
-        for path in self.EDGE_PATHS:
+        # 优先 Chrome
+        for path in self.CHROME_PATHS:
             if os.path.exists(path):
                 return path
-        # 备用 Chrome
-        for path in self.CHROME_PATHS:
+        # 备用 Edge
+        for path in self.EDGE_PATHS:
             if os.path.exists(path):
                 return path
         return None
     
     def _get_user_data_dir(self, unique: bool = False) -> Optional[str]:
         """获取用户数据目录
-        
+
         Args:
             unique: 是否使用唯一目录（用于多进程场景）
-        
-        使用专用的 Edge 数据目录（edge_browser_data），不影响用户日常使用的 Edge。
+
+        使用专用的 Chrome 数据目录（chrome_browser_data），不影响用户日常使用的 Chrome。
         当 unique=True 时，创建带 PID 后缀的临时目录，避免多进程冲突。
         """
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        
+
         if unique:
             # 多进程模式：使用带 PID 的临时目录
-            temp_dir = os.path.join(base_dir, "edge_browser_temp")
+            temp_dir = os.path.join(base_dir, "chrome_browser_temp")
             os.makedirs(temp_dir, exist_ok=True)
-            
+
             # 清理旧的临时目录（超过 1 小时的）
             self._cleanup_old_temp_dirs(temp_dir, max_age_hours=1)
-            
+
             # 使用 PID 确保每个进程有独立目录
             unique_dir = os.path.join(temp_dir, f"session_{os.getpid()}")
             os.makedirs(unique_dir, exist_ok=True)
             return unique_dir
         else:
             # 单进程模式：使用共享目录（保持登录状态）
-            edge_data = os.path.join(base_dir, "edge_browser_data")
-            os.makedirs(edge_data, exist_ok=True)
-            return edge_data
+            chrome_data = os.path.join(base_dir, "chrome_browser_data")
+            os.makedirs(chrome_data, exist_ok=True)
+            return chrome_data
     
     def _cleanup_old_temp_dirs(self, temp_dir: str, max_age_hours: int = 1) -> None:
         """清理旧的临时目录
@@ -325,7 +325,7 @@ class GoogleAISearcher:
         使用 storageState 文件在多进程间共享登录状态。
         """
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        return os.path.join(base_dir, "edge_browser_data", "storage_state.json")
+        return os.path.join(base_dir, "chrome_browser_data", "storage_state.json")
     
     def _save_storage_state(self, context) -> bool:
         """保存认证状态到文件

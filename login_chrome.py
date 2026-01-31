@@ -22,9 +22,12 @@ def main():
     
     # 检查 Chrome 是否存在
     chrome_paths = [
+        # Windows
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+        # macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
     
     chrome_path = None
@@ -40,7 +43,7 @@ def main():
     
     print(f"[OK] 找到 Chrome: {chrome_path}")
     
-    # 用户数据目录
+    # 用户数据目录（与 MCP 服务器读取的目录一致）
     user_data_dir = os.path.join(os.path.dirname(__file__), "chrome_browser_data")
     os.makedirs(user_data_dir, exist_ok=True)
     print(f"[OK] 用户数据目录: {user_data_dir}")

@@ -22,8 +22,11 @@ def main():
     
     # 检查 Edge 是否存在
     edge_paths = [
+        # Windows
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        # macOS
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     ]
     
     edge_path = None
