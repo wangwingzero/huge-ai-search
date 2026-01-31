@@ -162,8 +162,6 @@ python login_edge.py
 
 登录状态会保存到 `edge_browser_data/` 目录，之后 MCP 服务器会自动使用这个登录状态。
 
-> 💡 如果你更喜欢用 Chrome，可以运行 `python login_chrome.py`
-
 ## 使用方法
 
 配置完成后重启 AI 工具，直接对话：
@@ -200,10 +198,6 @@ python login_edge.py
 ```bash
 # 重新安装浏览器驱动
 patchright install msedge
-
-# 或使用 Chrome
-patchright install chromium
-python login_chrome.py
 ```
 
 ## License

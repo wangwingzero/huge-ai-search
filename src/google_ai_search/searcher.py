@@ -117,17 +117,31 @@ class GoogleAISearcher:
     支持多轮对话：保持浏览器会话，在同一页面追问。
     """
     
-    # Chrome 可能的安装路径（Windows）
+    # Chrome 可能的安装路径（跨平台）
     CHROME_PATHS = [
+        # Windows
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+        # macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        # Linux
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
     ]
     
-    # Edge 可能的安装路径（Windows）- 优先级更高
+    # Edge 可能的安装路径（跨平台）- 优先级更高
     EDGE_PATHS = [
+        # Windows
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        # macOS
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        # Linux
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
     ]
     
     # 验证码检测关键词
@@ -273,7 +287,7 @@ class GoogleAISearcher:
             logger.debug(f"清理临时目录失败: {e}")
     
     def _is_process_running(self, pid: int) -> bool:
-        """检查进程是否还在运行
+        """检查进程是否还在运行（跨平台）
         
         Args:
             pid: 进程 ID
@@ -281,14 +295,25 @@ class GoogleAISearcher:
         Returns:
             进程是否运行中
         """
+        import sys
+        
         try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if handle:
-                kernel32.CloseHandle(handle)
+            if sys.platform == "win32":
+                # Windows: 使用 ctypes
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if handle:
+                    kernel32.CloseHandle(handle)
+                    return True
+                return False
+            else:
+                # macOS/Linux: 使用 os.kill(pid, 0) 检测
+                import os
+                os.kill(pid, 0)
                 return True
+        except (OSError, ProcessLookupError):
             return False
         except Exception:
             # 如果无法检查，假设进程不在运行
