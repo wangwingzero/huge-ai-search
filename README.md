@@ -62,21 +62,12 @@ npm install -g huge-ai-search
 }
 ```
 
-### Claude Desktop
+### Claude Code
 
-编辑配置文件：
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+运行命令添加 MCP 服务器：
 
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "npx",
-      "args": ["-y", "huge-ai-search"]
-    }
-  }
-}
+```sh
+claude mcp add huge-ai-search -- npx -y huge-ai-search
 ```
 
 ### Kiro
