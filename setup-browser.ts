@@ -10,30 +10,28 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 
-// Chrome 路径
-const CHROME_PATHS: Record<string, string[]> = {
+// Edge 路径（与 searcher.ts 保持一致）
+const EDGE_PATHS: Record<string, string[]> = {
   win32: [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    path.join(os.homedir(), "AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"),
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
   ],
   darwin: [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
   ],
   linux: [
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium-browser",
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
   ],
 };
 
-function findChrome(): string | undefined {
+function findEdge(): string | undefined {
   const platform = process.platform;
-  const paths = CHROME_PATHS[platform] || [];
+  const paths = EDGE_PATHS[platform] || [];
   
-  for (const chromePath of paths) {
-    if (fs.existsSync(chromePath)) {
-      return chromePath;
+  for (const edgePath of paths) {
+    if (fs.existsSync(edgePath)) {
+      return edgePath;
     }
   }
   return undefined;
@@ -47,18 +45,19 @@ async function setup() {
     fs.mkdirSync(browserDataDir, { recursive: true });
   }
   
-  const chromePath = findChrome();
-  if (!chromePath) {
-    console.error("❌ 未找到 Chrome，请先安装 Chrome 浏览器");
+  const edgePath = findEdge();
+  if (!edgePath) {
+    console.error("❌ 未找到 Microsoft Edge，请先安装 Edge 浏览器");
+    console.error("   下载地址: https://www.microsoft.com/edge");
     return;
   }
   
-  console.log(`Chrome 路径: ${chromePath}`);
+  console.log(`Edge 路径: ${edgePath}`);
   console.log(`状态文件: ${storageStatePath}`);
   console.log("\n启动浏览器...");
   
   const browser = await chromium.launch({
-    executablePath: chromePath,
+    executablePath: edgePath,
     headless: false,
     args: [
       "--disable-blink-features=AutomationControlled",
