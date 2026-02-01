@@ -16,27 +16,11 @@
 | **macOS**   | 从[microsoft.com/edge](https://www.microsoft.com/edge) 下载安装 |
 | **Linux**   | `sudo apt install microsoft-edge-stable` 或从官网下载      |
 
-### 2. 登录 Google 账户（推荐）
+### 2. Google 账户验证
 
-为了获得最佳搜索体验，建议提前登录 Google 账户：
+首次搜索时如果遇到验证码，工具会**自动弹出浏览器窗口**，完成验证后会自动继续搜索。
 
-```bash
-# 方法 1：克隆仓库后运行设置脚本
-git clone https://github.com/wanghui5801/huge-ai-search.git
-cd huge-ai-search
-npm install
-npx ts-node setup-browser.ts
-```
-
-运行后会打开 Edge 浏览器窗口，请：
-
-1. 完成 Google 账户登录
-2. 如有验证码，完成验证
-3. 关闭浏览器窗口
-
-登录状态会保存到 `browser_data/storage_state.json`，后续搜索无需重复登录。
-
-> **注意**：如果不登录，首次搜索时可能会遇到验证码，工具会自动弹出浏览器窗口让你完成验证。
+验证状态会自动保存，后续搜索无需重复验证。
 
 ### 3. 代理设置（中国大陆用户）
 
@@ -198,28 +182,11 @@ A: 在弹出的浏览器窗口中完成验证，验证成功后会自动继续�
 
 ### Q: 登录状态保存在哪里？
 
-A: 保存在 `browser_data/storage_state.json`，包含 cookies，请勿分享。
+A: 保存在用户目录下的 `browser_data/` 文件夹中。
 
 ### Q: 如何清除登录状态？
 
 A: 删除 `browser_data/` 文件夹即可。
-
-## 开发
-
-```bash
-# 克隆仓库
-git clone https://github.com/wanghui5801/huge-ai-search.git
-cd huge-ai-search
-
-# 安装依赖
-npm install
-
-# 构建
-npm run build
-
-# 运行
-npm start
-```
 
 ## 技术栈
 
@@ -231,8 +198,3 @@ npm start
 ## License
 
 MIT
-
-## 联系
-
-- GitHub Issues: [提交问题](https://github.com/wangwingzero/huge-ai-search/issues)
-- GitHub: [wangwingzero](https://github.com/wangwingzero)

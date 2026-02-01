@@ -55,3 +55,6 @@ logs/
 
 # Images
 image/
+
+# Private files
+linuxdo-post.md

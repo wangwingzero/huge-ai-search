@@ -990,10 +990,12 @@ export class AISearcher {
       });
 
       const maxWaitMs = 5 * 60 * 1000;
-      const checkInterval = 2000;
+      const checkInterval = 1500; // 缩短检查间隔，更快响应验证成功
       const startTime = Date.now();
       let lastSaveTime = 0;
       const saveInterval = 2000; // 每 2 秒保存一次状态
+      let captchaPassedTime = 0; // 记录验证码通过的时间
+      const postCaptchaWaitMs = 15000; // 验证通过后额外等待 15 秒让页面加载
 
       console.error("\n" + "=".repeat(60));
       console.error("浏览器窗口已打开！");
@@ -1013,14 +1015,27 @@ export class AISearcher {
             }
           }
 
-          const content = (await page.evaluate(
-            "document.body.innerText"
-          )) as string;
-          const currentUrl = page.url();
+          let content: string;
+          let currentUrl: string;
+          try {
+            content = (await page.evaluate("document.body.innerText")) as string;
+            currentUrl = page.url();
+          } catch (evalError) {
+            // 页面可能正在导航，等待后重试
+            console.error("页面正在加载，等待...");
+            await page.waitForTimeout(1000);
+            continue;
+          }
 
           const isProblemPage =
             this.isCaptchaPage(content) ||
             currentUrl.toLowerCase().includes("sorry");
+
+          // 检测验证码是否已通过（不再是问题页面）
+          if (!isProblemPage && captchaPassedTime === 0) {
+            captchaPassedTime = Date.now();
+            console.error("✅ 检测到验证码已通过！等待页面加载搜索结果...");
+          }
 
           const hasAiModeIndicator =
             content.includes("AI 模式") || content.includes("AI Mode");
@@ -1030,6 +1045,7 @@ export class AISearcher {
           const hasSearchResult =
             hasAiModeIndicator && hasSubstantialContent && isNotLoading;
 
+          // 验证通过后，等待搜索结果
           if (!isProblemPage && hasSearchResult) {
             console.error("验证成功！正在获取搜索结果...");
 
@@ -1049,15 +1065,44 @@ export class AISearcher {
             break;
           }
 
+          // 如果验证已通过但还没有搜索结果，检查是否需要刷新页面
+          if (captchaPassedTime > 0 && !hasSearchResult) {
+            const timeSinceCaptchaPassed = Date.now() - captchaPassedTime;
+            
+            // 验证通过后 5 秒还没有结果，尝试刷新页面
+            if (timeSinceCaptchaPassed > 5000 && timeSinceCaptchaPassed < 6000) {
+              console.error("验证通过但未检测到搜索结果，尝试刷新页面...");
+              try {
+                await page.reload({ waitUntil: "domcontentloaded", timeout: 15000 });
+              } catch {
+                console.error("刷新页面超时，继续等待...");
+              }
+            }
+            
+            // 验证通过后超过 15 秒还没有结果，认为成功（状态已保存）
+            if (timeSinceCaptchaPassed > postCaptchaWaitMs) {
+              console.error("验证已通过，但未能获取搜索结果。认证状态已保存，请重新搜索。");
+              result.success = false;
+              result.error = "验证已通过，请重新搜索";
+              break;
+            }
+          }
+
           await page.waitForTimeout(checkInterval);
         } catch (error) {
           console.error(`等待验证时出错: ${error}`);
-          break;
+          // 不要立即退出，可能只是页面导航中的临时错误
+          await page.waitForTimeout(1000);
         }
       }
 
       if (!result.success && !result.error) {
-        result.error = "验证超时或用户关闭了浏览器";
+        // 检查是否验证已通过但超时
+        if (captchaPassedTime > 0) {
+          result.error = "验证已通过，但获取搜索结果超时。认证状态已保存，请重新搜索。";
+        } else {
+          result.error = "验证超时或用户关闭了浏览器";
+        }
       }
 
       try {

@@ -302,7 +302,7 @@ const server = new McpServer({
 
 // 注册工具
 server.tool(
-  "huge_ai_search",
+  "search",
   TOOL_DESCRIPTION,
   {
     query: z.string().describe("搜索问题（使用自然语言提问）"),
