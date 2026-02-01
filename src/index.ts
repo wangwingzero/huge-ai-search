@@ -12,6 +12,47 @@ import { z } from "zod";
 import { AISearcher, SearchResult } from "./searcher.js";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+
+// ============================================
+// 日志系统
+// ============================================
+const LOG_DIR = path.join(os.homedir(), ".huge-ai-search", "logs");
+const LOG_FILE = path.join(LOG_DIR, `search_${new Date().toISOString().split('T')[0]}.log`);
+
+// 确保日志目录存在
+try {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+} catch {
+  // 忽略创建目录失败
+}
+
+/**
+ * 写入日志文件
+ */
+function log(level: "INFO" | "ERROR" | "DEBUG", message: string): void {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] [${level}] ${message}\n`;
+  
+  // 输出到 stderr（MCP 标准）
+  console.error(message);
+  
+  // 同时写入日志文件
+  try {
+    fs.appendFileSync(LOG_FILE, logLine);
+  } catch {
+    // 忽略写入失败
+  }
+}
+
+/**
+ * 获取日志文件路径（供用户查看）
+ */
+function getLogPath(): string {
+  return LOG_FILE;
+}
 
 // 工具描述
 const TOOL_DESCRIPTION = `使用 AI 模式搜索，获取 AI 总结的搜索结果。
@@ -155,6 +196,66 @@ const LOGIN_COOLDOWN_SECONDS = 300; // 5 分钟
 
 // 搜索超时时间（秒）
 const SEARCH_TIMEOUT_SECONDS = 120;
+
+// ============================================
+// 全局 CAPTCHA 处理状态
+// 当有 CAPTCHA 正在处理时，其他请求应该等待
+// ============================================
+let captchaInProgress = false;
+let captchaWaitPromise: Promise<void> | null = null;
+let captchaWaitResolve: (() => void) | null = null;
+
+/**
+ * 标记 CAPTCHA 处理开始
+ */
+function markCaptchaStart(): void {
+  if (!captchaInProgress) {
+    captchaInProgress = true;
+    captchaWaitPromise = new Promise((resolve) => {
+      captchaWaitResolve = resolve;
+    });
+    console.error("[MCP] CAPTCHA 处理开始，其他请求将等待");
+  }
+}
+
+/**
+ * 标记 CAPTCHA 处理结束
+ */
+function markCaptchaEnd(): void {
+  if (captchaInProgress) {
+    captchaInProgress = false;
+    if (captchaWaitResolve) {
+      captchaWaitResolve();
+      captchaWaitResolve = null;
+    }
+    captchaWaitPromise = null;
+    console.error("[MCP] CAPTCHA 处理结束");
+  }
+}
+
+/**
+ * 等待 CAPTCHA 处理完成
+ * @returns true 如果需要重试搜索，false 如果超时
+ */
+async function waitForCaptcha(timeoutMs: number = 5 * 60 * 1000): Promise<boolean> {
+  if (!captchaInProgress || !captchaWaitPromise) {
+    return false;
+  }
+
+  console.error("[MCP] 等待 CAPTCHA 处理完成...");
+  const timeoutPromise = new Promise<void>((_, reject) => {
+    setTimeout(() => reject(new Error("等待超时")), timeoutMs);
+  });
+
+  try {
+    await Promise.race([captchaWaitPromise, timeoutPromise]);
+    console.error("[MCP] CAPTCHA 已处理完成，将重试搜索");
+    return true;
+  } catch {
+    console.error("[MCP] 等待 CAPTCHA 超时");
+    return false;
+  }
+}
 
 /**
  * 生成会话 ID
@@ -322,7 +423,7 @@ server.tool(
   async (args) => {
     const { query, language, follow_up, session_id } = args;
 
-    console.error(
+    log("INFO",
       `收到工具调用: query='${query}', language=${language}, follow_up=${follow_up}, session_id=${session_id || '(新会话)'}`
     );
 
@@ -379,6 +480,24 @@ server.tool(
       `获取到搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`
     );
 
+    // 检查是否有 CAPTCHA 正在处理
+    if (captchaInProgress) {
+      console.error("检测到 CAPTCHA 正在处理，等待完成...");
+      const shouldRetry = await waitForCaptcha();
+      if (!shouldRetry) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "搜索等待验证超时，请稍后重试",
+            },
+          ],
+        };
+      }
+      // CAPTCHA 处理完成，继续执行搜索
+      console.error("CAPTCHA 处理完成，继续执行搜索");
+    }
+
     // 获取或创建会话
     const { sessionId: activeSessionId, session } = await getOrCreateSession(
       follow_up ? session_id : undefined // 追问时复用会话，新搜索创建新会话
@@ -413,16 +532,40 @@ server.tool(
       // 更新会话访问时间
       session.lastAccess = Date.now();
 
-      console.error(
+      log(result.success ? "INFO" : "ERROR",
         `搜索结果: success=${result.success}, error=${result.success ? "N/A" : result.error}`
       );
 
+      // 检查是否是 CAPTCHA 被其他请求处理的情况
+      if (!result.success && result.error === "CAPTCHA_HANDLED_BY_OTHER_REQUEST") {
+        console.error("CAPTCHA 已被其他请求处理，自动重试搜索...");
+        // 标记 CAPTCHA 处理结束（可能是其他请求完成的）
+        markCaptchaEnd();
+        // 重新执行搜索（此时认证状态应该已更新）
+        const retryResult = await searcherInstance.search(query, language);
+        if (retryResult.success) {
+          const output = formatSearchResult(retryResult, follow_up, activeSessionId);
+          console.error(`重试搜索成功，返回结果长度: ${output.length}`);
+          return {
+            content: [{ type: "text" as const, text: output }],
+          };
+        }
+        // 重试也失败了，继续走下面的错误处理逻辑
+        console.error(`重试搜索也失败: ${retryResult.error}`);
+      }
+
+      // 检查是否需要处理 CAPTCHA（检测到验证码页面）
+      if (!result.success && (result.error.includes("验证码") || result.error.includes("captcha") || result.error.includes("CAPTCHA"))) {
+        // 标记 CAPTCHA 处理开始
+        markCaptchaStart();
+      }
+
       // 检查是否是登录/验证超时错误
       if (!result.success && isLoginTimeoutError(result.error)) {
+        // 标记 CAPTCHA 处理结束
+        markCaptchaEnd();
         console.error("检测到登录超时错误，启动冷却机制");
         loginTimeoutTimestamp = Date.now();
-        // 获取 MCP 服务器的安装目录（dist/index.js 的父目录的父目录）
-        const serverDir = process.cwd();
         return {
           content: [
             {
@@ -434,8 +577,7 @@ server.tool(
                 `### 🔧 解决方案\n\n` +
                 `请帮助用户在终端执行以下命令完成登录：\n\n` +
                 `\`\`\`bash\n` +
-                `cd ${serverDir}\n` +
-                `npx ts-node setup-browser.ts\n` +
+                `npx -p huge-ai-search huge-ai-search-setup\n` +
                 `\`\`\`\n\n` +
                 `执行后会弹出浏览器窗口，用户需要：\n` +
                 `1. 完成 Google 登录或验证码验证\n` +
@@ -449,7 +591,7 @@ server.tool(
       // 搜索失败时返回详细的错误信息和解决方案
       if (!result.success) {
         const errorMsg = result.error || "未知错误";
-        console.error(`搜索失败: ${errorMsg}`);
+        log("ERROR", `搜索失败: ${errorMsg}`);
         
         // 判断错误类型，给出针对性的解决方案
         const isLoginRequired = 
@@ -458,9 +600,6 @@ server.tool(
           errorMsg.includes("captcha") ||
           errorMsg.includes("未能提取");
         
-        // 获取 MCP 服务器的安装目录
-        const serverDir = process.cwd();
-        
         let solution = "";
         if (isLoginRequired) {
           solution = 
@@ -468,8 +607,7 @@ server.tool(
             `这个错误通常是因为需要登录 Google 账户或完成验证码验证。\n\n` +
             `**请帮助用户在终端执行以下命令：**\n\n` +
             `\`\`\`bash\n` +
-            `cd ${serverDir}\n` +
-            `npx ts-node setup-browser.ts\n` +
+            `npx -p huge-ai-search huge-ai-search-setup\n` +
             `\`\`\`\n\n` +
             `执行后会弹出浏览器窗口，用户需要：\n` +
             `1. 完成 Google 登录或验证码验证\n` +
@@ -480,7 +618,7 @@ server.tool(
             `### 🔧 可能的解决方案\n\n` +
             `- 检查网络连接是否正常\n` +
             `- 稍后重试\n` +
-            `- 如果问题持续，请帮助用户在终端运行 \`cd ${serverDir} && npx ts-node setup-browser.ts\` 重新登录`;
+            `- 如果问题持续，请帮助用户在终端运行 \`npx -p huge-ai-search huge-ai-search-setup\` 重新登录`;
         }
         
         return {
@@ -493,16 +631,21 @@ server.tool(
         };
       }
 
+      // 搜索成功，确保 CAPTCHA 状态已清除
+      markCaptchaEnd();
+
       const output = formatSearchResult(result, follow_up, activeSessionId);
-      console.error(`搜索成功，返回结果长度: ${output.length}`);
+      log("INFO", `搜索成功，返回结果长度: ${output.length}`);
 
       return {
         content: [{ type: "text" as const, text: output }],
       };
     } catch (error) {
+      // 异常时也要清除 CAPTCHA 状态
+      markCaptchaEnd();
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      console.error(`搜索执行异常: ${errorMessage}`);
+      log("ERROR", `搜索执行异常: ${errorMessage}`);
       return {
         content: [
           {
@@ -522,10 +665,10 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Huge AI Search MCP Server 已启动");
+  log("INFO", `Huge AI Search MCP Server 已启动，日志文件: ${getLogPath()}`);
 }
 
 main().catch((error) => {
-  console.error("服务器启动失败:", error);
+  log("ERROR", `服务器启动失败: ${error}`);
   process.exit(1);
 });

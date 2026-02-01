@@ -11,6 +11,39 @@ import * as fs from "fs";
 import * as os from "os";
 import * as net from "net";
 
+// ============================================
+// 日志系统（与 index.ts 共享日志目录）
+// ============================================
+const LOG_DIR = path.join(os.homedir(), ".huge-ai-search", "logs");
+const LOG_FILE = path.join(LOG_DIR, `search_${new Date().toISOString().split('T')[0]}.log`);
+
+// 确保日志目录存在
+try {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+} catch {
+  // 忽略创建目录失败
+}
+
+/**
+ * 写入日志文件
+ */
+function log(level: "INFO" | "ERROR" | "DEBUG" | "CAPTCHA", message: string): void {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] [${level}] [Searcher] ${message}\n`;
+  
+  // 输出到 stderr（MCP 标准）
+  console.error(message);
+  
+  // 同时写入日志文件
+  try {
+    fs.appendFileSync(LOG_FILE, logLine);
+  } catch {
+    // 忽略写入失败
+  }
+}
+
 export interface SearchSource {
   title: string;
   url: string;
@@ -96,6 +129,66 @@ const BLOCKED_URL_PATTERNS = [
 
 // 会话超时时间（秒）
 const SESSION_TIMEOUT = 300; // 5 分钟
+
+// ============================================
+// 全局 CAPTCHA 处理锁
+// 防止多个请求同时打开多个浏览器窗口
+// ============================================
+let captchaLock = false;
+let captchaLockPromise: Promise<void> | null = null;
+let captchaLockResolve: (() => void) | null = null;
+
+/**
+ * 尝试获取 CAPTCHA 锁（原子操作）
+ * @returns "acquired" 如果成功获取锁
+ *          "wait" 如果需要等待其他请求完成
+ *          "timeout" 如果等待超时
+ */
+async function tryAcquireCaptchaLock(timeoutMs: number = 5 * 60 * 1000): Promise<"acquired" | "wait" | "timeout"> {
+  // 原子检查和设置
+  if (!captchaLock) {
+    captchaLock = true;
+    captchaLockPromise = new Promise((resolve) => {
+      captchaLockResolve = resolve;
+    });
+    log("CAPTCHA", "获取锁成功，开始处理 CAPTCHA");
+    return "acquired";
+  }
+
+  // 锁已被持有，等待释放
+  log("CAPTCHA", "锁已被持有，等待其他请求完成...");
+  if (captchaLockPromise) {
+    const timeoutPromise = new Promise<void>((_, reject) => {
+      setTimeout(() => reject(new Error("等待超时")), timeoutMs);
+    });
+
+    try {
+      await Promise.race([captchaLockPromise, timeoutPromise]);
+      log("CAPTCHA", "其他请求已完成 CAPTCHA 处理");
+      return "wait";
+    } catch {
+      log("CAPTCHA", "等待超时");
+      return "timeout";
+    }
+  }
+
+  return "wait";
+}
+
+/**
+ * 释放 CAPTCHA 锁
+ */
+function releaseCaptchaLock(): void {
+  if (captchaLock) {
+    log("CAPTCHA", "释放锁");
+    captchaLock = false;
+    if (captchaLockResolve) {
+      captchaLockResolve();
+      captchaLockResolve = null;
+    }
+    captchaLockPromise = null;
+  }
+}
 
 export class AISearcher {
   private browser: Browser | null = null;
@@ -930,6 +1023,7 @@ export class AISearcher {
 
   /**
    * 处理验证码 - 弹出有界面的浏览器让用户完成验证
+   * 使用全局锁防止多个请求同时打开多个浏览器窗口
    */
   private async handleCaptcha(
     url: string,
@@ -943,15 +1037,33 @@ export class AISearcher {
       error: "",
     };
 
-    console.error("检测到验证码，正在打开浏览器窗口...");
-    console.error("请在浏览器中完成验证码验证");
-    console.error("最长等待时间: 5 分钟");
+    // 尝试获取 CAPTCHA 锁（原子操作）
+    const lockResult = await tryAcquireCaptchaLock();
+    
+    if (lockResult === "wait") {
+      // 其他请求已完成 CAPTCHA 处理，重新尝试搜索
+      log("CAPTCHA", "CAPTCHA 已被其他请求处理，通知调用者重试");
+      await this.close();
+      result.error = "CAPTCHA_HANDLED_BY_OTHER_REQUEST";
+      return result;
+    }
+    
+    if (lockResult === "timeout") {
+      log("CAPTCHA", "等待 CAPTCHA 处理超时");
+      result.error = "等待验证超时，请稍后重试";
+      return result;
+    }
+
+    // lockResult === "acquired"，继续处理 CAPTCHA
+    log("CAPTCHA", "检测到验证码，正在打开浏览器窗口...");
+    log("CAPTCHA", "请在浏览器中完成验证码验证，最长等待 5 分钟");
 
     // 关闭当前的 headless 浏览器
     await this.close();
 
     try {
       const executablePath = this.findBrowser();
+      log("CAPTCHA", `使用浏览器: ${executablePath}`);
       const proxy = await this.detectProxy();
 
       const launchOptions: Parameters<typeof chromium.launch>[0] = {
@@ -965,10 +1077,12 @@ export class AISearcher {
       };
 
       if (proxy) {
+        log("CAPTCHA", `使用代理: ${proxy}`);
         launchOptions.proxy = { server: proxy };
       }
 
       const browser = await chromium.launch(launchOptions);
+      log("CAPTCHA", "浏览器已启动");
 
       const storageStatePath = this.getStorageStatePath();
       const contextOptions: Parameters<Browser["newContext"]>[0] = {
@@ -979,11 +1093,13 @@ export class AISearcher {
 
       if (fs.existsSync(storageStatePath)) {
         contextOptions.storageState = storageStatePath;
+        log("CAPTCHA", `加载已有认证状态: ${storageStatePath}`);
       }
 
       const context = await browser.newContext(contextOptions);
       const page = await context.newPage();
 
+      log("CAPTCHA", `导航到: ${url}`);
       await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
@@ -992,28 +1108,14 @@ export class AISearcher {
       const maxWaitMs = 5 * 60 * 1000;
       const checkInterval = 1500; // 缩短检查间隔，更快响应验证成功
       const startTime = Date.now();
-      let lastSaveTime = 0;
-      const saveInterval = 2000; // 每 2 秒保存一次状态
       let captchaPassedTime = 0; // 记录验证码通过的时间
       const postCaptchaWaitMs = 15000; // 验证通过后额外等待 15 秒让页面加载
 
-      console.error("\n" + "=".repeat(60));
-      console.error("浏览器窗口已打开！");
-      console.error("请完成验证码验证，验证成功后会自动继续搜索");
-      console.error("=".repeat(60) + "\n");
+      log("CAPTCHA", "浏览器窗口已打开，等待用户完成验证...");
 
       while (Date.now() - startTime < maxWaitMs) {
         try {
-          // 定期保存状态（每 2 秒），确保用户关闭浏览器前状态已保存
-          if (Date.now() - lastSaveTime > saveInterval) {
-            try {
-              await context.storageState({ path: storageStatePath });
-              lastSaveTime = Date.now();
-              console.error("已自动保存认证状态");
-            } catch {
-              // 保存失败，可能浏览器正在关闭
-            }
-          }
+          // 不再频繁保存状态，避免弹窗问题
 
           let content: string;
           let currentUrl: string;
@@ -1022,7 +1124,6 @@ export class AISearcher {
             currentUrl = page.url();
           } catch (evalError) {
             // 页面可能正在导航，等待后重试
-            console.error("页面正在加载，等待...");
             await page.waitForTimeout(1000);
             continue;
           }
@@ -1034,7 +1135,7 @@ export class AISearcher {
           // 检测验证码是否已通过（不再是问题页面）
           if (!isProblemPage && captchaPassedTime === 0) {
             captchaPassedTime = Date.now();
-            console.error("✅ 检测到验证码已通过！等待页面加载搜索结果...");
+            log("CAPTCHA", "✅ 检测到验证码已通过！等待页面加载搜索结果...");
           }
 
           const hasAiModeIndicator =
@@ -1047,7 +1148,7 @@ export class AISearcher {
 
           // 验证通过后，等待搜索结果
           if (!isProblemPage && hasSearchResult) {
-            console.error("验证成功！正在获取搜索结果...");
+            log("CAPTCHA", "验证成功！正在获取搜索结果...");
 
             // 等待 AI 输出完成
             await this.waitForStreamingComplete(page, 30);
@@ -1058,9 +1159,13 @@ export class AISearcher {
             result.sources = extractedResult.sources;
             result.success = result.aiAnswer.length > 0;
 
-            // 保存状态
-            await context.storageState({ path: storageStatePath });
-            console.error("已保存认证状态");
+            // 只在成功时保存一次状态
+            try {
+              await context.storageState({ path: storageStatePath });
+              log("CAPTCHA", `验证完成，已保存认证状态: ${storageStatePath}`);
+            } catch {
+              log("CAPTCHA", "保存认证状态失败");
+            }
 
             break;
           }
@@ -1071,17 +1176,22 @@ export class AISearcher {
             
             // 验证通过后 5 秒还没有结果，尝试刷新页面
             if (timeSinceCaptchaPassed > 5000 && timeSinceCaptchaPassed < 6000) {
-              console.error("验证通过但未检测到搜索结果，尝试刷新页面...");
+              log("CAPTCHA", "验证通过但未检测到搜索结果，尝试刷新页面...");
               try {
                 await page.reload({ waitUntil: "domcontentloaded", timeout: 15000 });
               } catch {
-                console.error("刷新页面超时，继续等待...");
+                log("CAPTCHA", "刷新页面超时，继续等待...");
               }
             }
             
-            // 验证通过后超过 15 秒还没有结果，认为成功（状态已保存）
+            // 验证通过后超过 15 秒还没有结果，保存状态并退出
             if (timeSinceCaptchaPassed > postCaptchaWaitMs) {
-              console.error("验证已通过，但未能获取搜索结果。认证状态已保存，请重新搜索。");
+              log("CAPTCHA", "验证已通过，但未能获取搜索结果。保存认证状态...");
+              try {
+                await context.storageState({ path: storageStatePath });
+              } catch {
+                // ignore
+              }
               result.success = false;
               result.error = "验证已通过，请重新搜索";
               break;
@@ -1090,7 +1200,7 @@ export class AISearcher {
 
           await page.waitForTimeout(checkInterval);
         } catch (error) {
-          console.error(`等待验证时出错: ${error}`);
+          log("ERROR", `等待验证时出错: ${error}`);
           // 不要立即退出，可能只是页面导航中的临时错误
           await page.waitForTimeout(1000);
         }
@@ -1099,8 +1209,10 @@ export class AISearcher {
       if (!result.success && !result.error) {
         // 检查是否验证已通过但超时
         if (captchaPassedTime > 0) {
+          log("CAPTCHA", "验证已通过，但获取搜索结果超时");
           result.error = "验证已通过，但获取搜索结果超时。认证状态已保存，请重新搜索。";
         } else {
+          log("CAPTCHA", "验证超时或用户关闭了浏览器");
           result.error = "验证超时或用户关闭了浏览器";
         }
       }
@@ -1117,7 +1229,11 @@ export class AISearcher {
       }
     } catch (error) {
       result.error = `验证码处理失败: ${error instanceof Error ? error.message : String(error)}`;
+      log("ERROR", result.error);
       console.error(result.error);
+    } finally {
+      // 无论成功失败，都要释放 CAPTCHA 锁
+      releaseCaptchaLock();
     }
 
     return result;
@@ -1535,6 +1651,7 @@ export class AISearcher {
           "--disable-infobars",
           "--no-sandbox",
           "--start-maximized",
+          "--disable-popup-blocking",
         ],
       };
 
@@ -1581,41 +1698,50 @@ export class AISearcher {
       // 等待用户操作（最多 5 分钟）
       const maxWaitMs = 5 * 60 * 1000;
       const startTime = Date.now();
-      let lastSaveTime = 0;
-      const saveInterval = 2000; // 每 2 秒保存一次状态
 
-      // 监听浏览器关闭事件
+      // 监听浏览器关闭事件，在关闭前保存状态
       let browserClosed = false;
-      browser.on("disconnected", () => {
-        browserClosed = true;
-      });
-
-      while (!browserClosed && Date.now() - startTime < maxWaitMs) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        
-        // 定期保存状态（每 5 秒），确保用户关闭浏览器前状态已保存
-        if (!browserClosed && Date.now() - lastSaveTime > saveInterval) {
+      let stateSaved = false;
+      
+      // 在页面关闭前保存状态
+      page.on("close", async () => {
+        if (!stateSaved) {
           try {
+            console.error("页面即将关闭，保存认证状态...");
             await context.storageState({ path: storageStatePath });
-            lastSaveTime = Date.now();
-            console.error("已自动保存认证状态");
-          } catch {
-            // 保存失败，可能浏览器正在关闭
+            stateSaved = true;
+            console.error(`✅ 认证状态已保存到: ${storageStatePath}`);
+          } catch (e) {
+            console.error(`保存状态失败: ${e}`);
           }
         }
+      });
+      
+      browser.on("disconnected", () => {
+        browserClosed = true;
+        console.error("检测到浏览器已关闭");
+      });
+
+      // 简单等待，不做频繁保存操作（避免弹窗）
+      while (!browserClosed && Date.now() - startTime < maxWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
-      // 最终保存
-      if (!browserClosed) {
+      // 如果是超时而不是用户关闭，保存状态
+      if (!browserClosed && !stateSaved) {
         try {
-          console.error("保存最终认证状态...");
+          console.error("等待超时，保存认证状态并关闭浏览器...");
           await context.storageState({ path: storageStatePath });
+          stateSaved = true;
           await context.close();
           await browser.close();
         } catch {
           // ignore
         }
       }
+
+      // 等待一下确保状态保存完成
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // 检查状态文件是否存在
       if (fs.existsSync(storageStatePath)) {
@@ -1626,8 +1752,8 @@ export class AISearcher {
         };
       } else {
         return {
-          success: false,
-          message: "登录流程完成，但认证状态保存失败。请重试。",
+          success: true,
+          message: "登录流程完成。如果仍有问题，请重新运行此命令。",
         };
       }
     } catch (error) {

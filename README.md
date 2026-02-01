@@ -188,6 +188,14 @@ A: 保存在用户目录下的 `browser_data/` 文件夹中。
 
 A: 删除 `browser_data/` 文件夹即可。
 
+### Q: 如何手动完成登录/验证？
+
+A: 运行以下命令会弹出浏览器窗口，完成登录后关闭即可：
+
+```bash
+npx -p huge-ai-search huge-ai-search-setup
+```
+
 ## 技术栈
 
 - **Runtime**: Node.js 18+
