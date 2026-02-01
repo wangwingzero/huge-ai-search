@@ -31,13 +31,13 @@
   ],
   "author": "wanghui5801",
   "license": "MIT",
-  "homepage": "https://github.com/wanghui5801/huge-ai-search#readme",
+  "homepage": "https://github.com/wangwingzero/huge-ai-search#readme",
   "bugs": {
-    "url": "https://github.com/wanghui5801/huge-ai-search/issues"
+    "url": "https://github.com/wangwingzero/huge-ai-search/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wanghui5801/huge-ai-search.git"
+    "url": "git+https://github.com/wangwingzero/huge-ai-search.git"
   },
   "engines": {
     "node": ">=18.0.0"
