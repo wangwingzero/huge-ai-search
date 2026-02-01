@@ -65,7 +65,7 @@ npm install -g huge-ai-search
   "mcpServers": {
     "huge-ai-search": {
       "command": "npx",
-      "args": ["-y", "huge-ai-search"]
+      "args": ["-y", "huge-ai-search@latest"]
     }
   }
 }
@@ -74,7 +74,7 @@ npm install -g huge-ai-search
 ### Claude Code
 
 ```sh
-claude mcp add huge-ai-search -- npx -y huge-ai-search
+claude mcp add huge-ai-search -- npx -y huge-ai-search@latest
 ```
 
 ### Kiro
@@ -85,31 +85,96 @@ claude mcp add huge-ai-search -- npx -y huge-ai-search
 {
   "mcpServers": {
     "huge-ai-search": {
+      "disabled": false,
       "command": "npx",
-      "args": ["-y", "huge-ai-search"]
+      "args": ["-y", "huge-ai-search@latest"],
+      "autoApprove": ["search"]
     }
   }
 }
 ```
 
+### Codex CLI
+
+编辑 `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.huge-ai-search]
+command = "npx"
+args = ["-y", "huge-ai-search@latest"]
+```
+
+或使用命令行快捷添加：
+
+```bash
+codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
+```
+
 ### Windsurf
 
-编辑 `~/.windsurf/mcp.json`：
+编辑 `~/.codeium/windsurf/mcp_config.json`（Windows: `%APPDATA%\Codeium\Windsurf\mcp_config.json`）：
 
 ```json
 {
   "mcpServers": {
     "huge-ai-search": {
       "command": "npx",
-      "args": ["-y", "huge-ai-search"]
+      "args": ["-y", "huge-ai-search@latest"]
     }
   }
 }
 ```
 
+### Claude Desktop
+
+编辑配置文件：
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "npx",
+      "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+在项目根目录创建 `.vscode/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "npx",
+      "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+或使用命令面板 `MCP: Add Server` 添加。
+
 ### VS Code + Cline
 
-编辑 Cline MCP 设置，添加相同配置。
+编辑 Cline MCP 设置文件：
+- macOS: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+- Windows: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "npx",
+      "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
 
 ## 使用方法
 
