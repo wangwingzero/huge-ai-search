@@ -811,6 +811,7 @@ export class AISearcher {
         'AI 模式',
         '全部图片视频新闻更多',
         '全部 图片 视频 新闻 更多',
+        '全部\\n图片\\n视频\\n新闻\\n更多',
         '登录',
         'AI 的回答未必正确无误，请注意核查',
         'AI 回答可能包含错误。 了解详情',
@@ -824,6 +825,7 @@ export class AISearcher {
         '关于这条结果',
         'AI Mode',
         'All Images Videos News More',
+        'All\\nImages\\nVideos\\nNews\\nMore',
         'Sign in',
         'AI responses may include mistakes. Learn more',
         'AI responses may include mistakes.Learn more',
@@ -839,6 +841,7 @@ export class AISearcher {
         'AI Mode response is ready',
         'AI モード',
         'すべて 画像 動画 ニュース もっと見る',
+        'すべて\\n画像\\n動画\\nニュース\\nもっと見る',
         'ログイン',
         'AI の回答には間違いが含まれている場合があります。 詳細',
         'すべて表示',
@@ -853,6 +856,13 @@ export class AISearcher {
         '无障碍功能帮助',
         '无障碍功能反馈',
         '过滤条件和主题',
+      ];
+      
+      // 需要单独清理的单词（每行一个的情况）
+      const singleNavWords = [
+        '全部', '图片', '视频', '新闻', '更多',
+        'All', 'Images', 'Videos', 'News', 'More',
+        'すべて', '画像', '動画', 'ニュース', 'もっと見る',
       ];
       
       // 需要清理的正则模式（数字+网站）
@@ -881,6 +891,23 @@ export class AISearcher {
         for (const str of navStrings) {
           cleaned = cleaned.split(str).join('');
         }
+        
+        // 清理开头的单独导航词（每行一个的情况）
+        // 只清理文本开头连续出现的导航词
+        const lines = cleaned.split('\\n');
+        let startIndex = 0;
+        for (let i = 0; i < Math.min(lines.length, 10); i++) {
+          const line = lines[i].trim();
+          if (singleNavWords.includes(line) || line === '') {
+            startIndex = i + 1;
+          } else {
+            break;
+          }
+        }
+        if (startIndex > 0) {
+          cleaned = lines.slice(startIndex).join('\\n');
+        }
+        
         // 正则替换（数字+网站）
         for (const pattern of numSitesPatterns) {
           cleaned = cleaned.replace(pattern, '');
@@ -1662,7 +1689,17 @@ export class AISearcher {
 
       const browser = await chromium.launch(launchOptions);
 
-      const storageStatePath = this.getStorageStatePath();
+      // 重要：setup 工具必须保存到共享路径，而不是会话路径
+      // 这样 MCP 服务器才能读取到认证状态
+      const storageStatePath = this.getSharedStorageStatePath();
+      
+      // 确保共享目录存在
+      const sharedDir = path.dirname(storageStatePath);
+      if (!fs.existsSync(sharedDir)) {
+        fs.mkdirSync(sharedDir, { recursive: true });
+        console.error(`创建共享目录: ${sharedDir}`);
+      }
+      
       const contextOptions: Parameters<Browser["newContext"]>[0] = {
         viewport: { width: 1280, height: 900 },
         userAgent:
