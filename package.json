@@ -1,12 +1,17 @@
 {
   "name": "huge-ai-search",
   "version": "1.1.0",
-  "description": "Huge AI Search MCP Server - AI 搜索聚合工具",
+  "description": "Huge AI Search MCP Server - 使用 Google AI Mode 进行智能搜索，支持追问对话",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "huge-ai-search": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -17,14 +22,22 @@
     "mcp",
     "ai",
     "search",
+    "google",
     "playwright",
-    "model-context-protocol"
+    "model-context-protocol",
+    "claude",
+    "kiro",
+    "edge"
   ],
   "author": "wanghui5801",
   "license": "MIT",
+  "homepage": "https://github.com/wanghui5801/huge-ai-search#readme",
+  "bugs": {
+    "url": "https://github.com/wanghui5801/huge-ai-search/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/wanghui5801/huge-ai-search"
+    "url": "git+https://github.com/wanghui5801/huge-ai-search.git"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -36,6 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.0"
   }
 }
