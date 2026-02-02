@@ -259,11 +259,11 @@ A: 在弹出的浏览器窗口中完成验证，验证成功后会自动继续�
 
 ### Q: 登录状态保存在哪里？
 
-A: 保存在用户目录下的 `browser_data/` 文件夹中。
+A: 保存在用户目录下的 `~/.huge-ai-search/browser_data/` 文件夹中。
 
 ### Q: 如何清除登录状态？
 
-A: 删除 `browser_data/` 文件夹即可。
+A: 删除 `~/.huge-ai-search/browser_data/` 文件夹即可。
 
 ### Q: 如何手动完成登录/验证？
 

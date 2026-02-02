@@ -213,12 +213,15 @@ export class AISearcher {
 
   private sessionId: string;
 
+  // 浏览器数据根目录（固定在用户目录，避免权限问题）
+  private static readonly BROWSER_DATA_ROOT = path.join(os.homedir(), ".huge-ai-search", "browser_data");
+
   constructor(timeout: number = 30, headless: boolean = true, sessionId?: string) {
     this.timeout = timeout;
     this.headless = headless;
     // 每个会话使用独立的数据目录，避免 Chrome 的用户数据目录锁冲突
     this.sessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    this.browserDataDir = path.join(process.cwd(), "browser_data", this.sessionId);
+    this.browserDataDir = path.join(AISearcher.BROWSER_DATA_ROOT, this.sessionId);
     if (!fs.existsSync(this.browserDataDir)) {
       fs.mkdirSync(this.browserDataDir, { recursive: true });
     }
@@ -343,7 +346,7 @@ export class AISearcher {
    * 获取共享的存储状态文件路径（登录脚本保存的位置）
    */
   private getSharedStorageStatePath(): string {
-    return path.join(process.cwd(), "browser_data", "storage_state.json");
+    return path.join(AISearcher.BROWSER_DATA_ROOT, "storage_state.json");
   }
 
   /**

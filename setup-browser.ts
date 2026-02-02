@@ -38,7 +38,8 @@ function findEdge(): string | undefined {
 }
 
 async function setup() {
-  const browserDataDir = path.join(process.cwd(), "browser_data");
+  // 使用固定的用户目录，与 searcher.ts 保持一致
+  const browserDataDir = path.join(os.homedir(), ".huge-ai-search", "browser_data");
   const storageStatePath = path.join(browserDataDir, "storage_state.json");
   
   if (!fs.existsSync(browserDataDir)) {
