@@ -70,7 +70,9 @@ npm install -g huge-ai-search
 
 ### Cursor
 
-编辑 `~/.cursor/mcp.json`：
+编辑 `~/.cursor/mcp.json`（Windows: `%USERPROFILE%\.cursor\mcp.json`）：
+
+**macOS / Linux:**
 
 ```json
 {
@@ -78,6 +80,19 @@ npm install -g huge-ai-search
     "huge-ai-search": {
       "command": "npx",
       "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
     }
   }
 }
@@ -109,7 +124,9 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
 
 ### Kiro
 
-编辑 `~/.kiro/settings/mcp.json`：
+编辑 `~/.kiro/settings/mcp.json`（Windows: `%USERPROFILE%\.kiro\settings\mcp.json`）：
+
+**macOS / Linux:**
 
 ```json
 {
@@ -118,6 +135,21 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
       "disabled": false,
       "command": "npx",
       "args": ["-y", "huge-ai-search@latest"],
+      "autoApprove": ["search"]
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "disabled": false,
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"],
       "autoApprove": ["search"]
     }
   }
@@ -144,12 +176,27 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
 
 编辑 `~/.codeium/windsurf/mcp_config.json`（Windows: `%APPDATA%\Codeium\Windsurf\mcp_config.json`）：
 
+**macOS / Linux:**
+
 ```json
 {
   "mcpServers": {
     "huge-ai-search": {
       "command": "npx",
       "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
     }
   }
 }
@@ -161,6 +208,8 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
+**macOS / Linux:**
+
 ```json
 {
   "mcpServers": {
@@ -172,9 +221,24 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
 }
 ```
 
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
 ### VS Code (GitHub Copilot)
 
 在项目根目录创建 `.vscode/mcp.json`：
+
+**macOS / Linux:**
 
 ```json
 {
@@ -182,6 +246,19 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
     "huge-ai-search": {
       "command": "npx",
       "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
     }
   }
 }
@@ -195,12 +272,27 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
 - macOS: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 - Windows: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
 
+**macOS / Linux:**
+
 ```json
 {
   "mcpServers": {
     "huge-ai-search": {
       "command": "npx",
       "args": ["-y", "huge-ai-search@latest"]
+    }
+  }
+}
+```
+
+**Windows:**
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
     }
   }
 }
