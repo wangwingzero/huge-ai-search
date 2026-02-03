@@ -85,9 +85,27 @@ npm install -g huge-ai-search
 
 ### Claude Code
 
+**macOS / Linux:**
+
 ```sh
 claude mcp add huge-ai-search -- npx -y huge-ai-search@latest
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+claude mcp add-json huge-ai-search -s user '{"command":"cmd", "args":["/c", "npx", "-y", "huge-ai-search@latest"]}'
+```
+
+**Windows (CMD):**
+
+```cmd
+claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c\", \"npx\", \"-y\", \"huge-ai-search@latest\"]}"
+```
+
+> ⚠️ Windows 上 `claude mcp add` 命令不支持 `-y` 参数，需要使用 `add-json` 方式。
+> - PowerShell：用单引号 `'...'` 包裹 JSON，内部双引号无需转义
+> - CMD：用双引号 `"..."` 包裹 JSON，内部双引号需用 `\"` 转义
 
 ### Kiro
 
