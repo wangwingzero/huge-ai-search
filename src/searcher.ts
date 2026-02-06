@@ -10,38 +10,15 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as net from "net";
+import { initializeLogger, writeLog } from "./logger.js";
 
-// ============================================
-// 日志系统（与 index.ts 共享日志目录）
-// ============================================
-const LOG_DIR = path.join(os.homedir(), ".huge-ai-search", "logs");
-const LOG_FILE = path.join(LOG_DIR, `search_${new Date().toISOString().split('T')[0]}.log`);
-
-// 确保日志目录存在
-try {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-  }
-} catch {
-  // 忽略创建目录失败
-}
+initializeLogger();
 
 /**
  * 写入日志文件
  */
 function log(level: "INFO" | "ERROR" | "DEBUG" | "CAPTCHA", message: string): void {
-  const timestamp = new Date().toISOString();
-  const logLine = `[${timestamp}] [${level}] [Searcher] ${message}\n`;
-  
-  // 输出到 stderr（MCP 标准）
-  console.error(message);
-  
-  // 同时写入日志文件
-  try {
-    fs.appendFileSync(LOG_FILE, logLine);
-  } catch {
-    // 忽略写入失败
-  }
+  writeLog(level, message, "Searcher");
 }
 
 export interface SearchSource {
@@ -258,7 +235,7 @@ export class AISearcher {
 
   /**
    * 检测系统代理设置
-   * 支持环境变量和常见代理端口检测（v2ray、clash 等）
+   * 支持环境变量和常见代理端口检测（Clash、V2Ray/Xray、Sing-Box、Surge 等）
    */
   private async detectProxy(): Promise<string | undefined> {
     console.error("开始检测代理...");
@@ -281,23 +258,65 @@ export class AISearcher {
     }
     console.error("环境变量中未找到代理配置");
 
-    // 2. 检测常见代理端口（v2ray、clash 等）
-    const commonPorts: [number, string][] = [
-      [10809, "http://127.0.0.1:10809"], // v2ray 默认 HTTP 代理
-      [7890, "http://127.0.0.1:7890"], // clash 默认 HTTP 代理
-      [10808, "socks5://127.0.0.1:10808"], // v2ray 默认 SOCKS5 代理
-      [7891, "socks5://127.0.0.1:7891"], // clash 默认 SOCKS5 代理
-      [1080, "socks5://127.0.0.1:1080"], // 通用 SOCKS5 端口
+    // 2. 检测常见代理端口
+    type PortCandidate = {
+      port: number;
+      proxyUrl?: string;
+      note: string;
+      risky?: boolean;
+    };
+    const commonPorts: PortCandidate[] = [
+      // 高置信度：常见本地代理入站端口
+      { port: 7890, proxyUrl: "http://127.0.0.1:7890", note: "Clash Mixed/HTTP 端口" },
+      { port: 10809, proxyUrl: "http://127.0.0.1:10809", note: "v2rayN HTTP 端口" },
+      { port: 10808, proxyUrl: "socks5://127.0.0.1:10808", note: "v2rayN SOCKS5 端口" },
+      { port: 7891, proxyUrl: "socks5://127.0.0.1:7891", note: "Clash SOCKS5 端口" },
+      { port: 7897, proxyUrl: "http://127.0.0.1:7897", note: "常见自定义 HTTP/Mixed 端口" },
+      { port: 1080, proxyUrl: "socks5://127.0.0.1:1080", note: "通用 SOCKS5 端口（V2Ray/SS/Trojan）" },
+      { port: 20171, proxyUrl: "http://127.0.0.1:20171", note: "v2rayA HTTP 端口" },
+      { port: 20170, proxyUrl: "socks5://127.0.0.1:20170", note: "v2rayA SOCKS5 端口" },
+      { port: 20172, proxyUrl: "http://127.0.0.1:20172", note: "v2rayA 分流 HTTP 端口" },
+      { port: 2080, proxyUrl: "http://127.0.0.1:2080", note: "Sing-Box 常见 HTTP 端口" },
+      { port: 2081, proxyUrl: "socks5://127.0.0.1:2081", note: "Sing-Box 常见 SOCKS5 端口" },
+      { port: 2088, proxyUrl: "http://127.0.0.1:2088", note: "Sing-Box 常见 Mixed 端口" },
+      { port: 6152, proxyUrl: "http://127.0.0.1:6152", note: "Surge HTTP 端口" },
+      { port: 6153, proxyUrl: "socks5://127.0.0.1:6153", note: "Surge SOCKS5 端口" },
+
+      // 低置信度：可能是代理，也可能是普通 Web/服务端口
+      { port: 2053, proxyUrl: "http://127.0.0.1:2053", note: "常见备用代理/Web 端口", risky: true },
+      { port: 2083, proxyUrl: "http://127.0.0.1:2083", note: "常见备用代理/Web 端口", risky: true },
+      { port: 2087, proxyUrl: "http://127.0.0.1:2087", note: "常见备用代理/Web 端口", risky: true },
+      { port: 8080, proxyUrl: "http://127.0.0.1:8080", note: "常见 HTTP 代理/Web 端口", risky: true },
+      { port: 8443, proxyUrl: "http://127.0.0.1:8443", note: "常见 HTTPS 代理/Web 端口", risky: true },
+      { port: 80, proxyUrl: "http://127.0.0.1:80", note: "HTTP 端口（易与本地 Web 服务冲突）", risky: true },
+      { port: 443, proxyUrl: "http://127.0.0.1:443", note: "HTTPS 端口（易与本地 Web 服务冲突）", risky: true },
+
+      // 可检测但默认不作为浏览器代理使用的端口
+      { port: 7892, note: "Clash Redir 透明代理端口（非浏览器代理）" },
+      { port: 9090, note: "Clash 外部控制/Dashboard 端口（非浏览器代理）" },
+      { port: 53, note: "DNS 监听端口（非浏览器代理）" },
+      { port: 54321, note: "X-UI/3X-UI 面板端口（非浏览器代理）" },
     ];
 
-    for (const [port, proxyUrl] of commonPorts) {
-      console.error(`检测端口 ${port}...`);
+    for (const { port, proxyUrl, note, risky } of commonPorts) {
+      console.error(`检测端口 ${port}（${note}）...`);
       const isOpen = await this.checkPort(port);
       console.error(`端口 ${port} 状态: ${isOpen ? '开放' : '关闭'}`);
-      if (isOpen) {
-        console.error(`检测到本地代理端口 ${port} 开放，使用代理: ${proxyUrl}`);
-        return proxyUrl;
+      if (!isOpen) {
+        continue;
       }
+
+      if (!proxyUrl) {
+        console.error(`端口 ${port} 已开放，但该端口通常不能作为浏览器代理，跳过自动使用`);
+        continue;
+      }
+
+      if (risky) {
+        console.error(`警告: 端口 ${port} 属于低置信度端口，可能是普通 Web 服务。若后续失败，请优先使用环境变量显式指定代理`);
+      }
+
+      console.error(`检测到本地代理端口 ${port} 开放，使用代理: ${proxyUrl}`);
+      return proxyUrl;
     }
 
     console.error("未检测到任何代理");
@@ -693,15 +712,15 @@ export class AISearcher {
    */
   private async waitForStreamingComplete(
     page: Page,
-    maxWaitSeconds: number = 30
+    maxWaitSeconds: number = 18
   ): Promise<boolean> {
     console.error("等待 AI 流式输出完成...");
 
     let lastContentLength = 0;
     let stableCount = 0;
-    const stableThreshold = 3;
+    const stableThreshold = 2;
     const checkInterval = 500;
-    const minContentLength = 500;
+    const minContentLength = 300;
 
     for (let i = 0; i < maxWaitSeconds * 2; i++) {
       try {
@@ -738,10 +757,16 @@ export class AISearcher {
           })()
         `) as number;
 
-        if (hasFollowUp && currentLength >= minContentLength && sourceCount >= 3) {
-          console.error(
-            `检测到追问建议，AI 输出完成，内容长度: ${currentLength}，来源数: ${sourceCount}`
-          );
+        if (hasFollowUp && currentLength >= minContentLength) {
+          if (sourceCount >= 1) {
+            console.error(
+              `检测到追问建议，AI 输出完成，内容长度: ${currentLength}，来源数: ${sourceCount}`
+            );
+          } else {
+            console.error(
+              `检测到追问建议，内容长度: ${currentLength}，来源数: ${sourceCount}，按降级策略提前返回`
+            );
+          }
           return true;
         }
 
@@ -751,16 +776,14 @@ export class AISearcher {
           if (currentLength >= minContentLength) {
             stableCount++;
             if (stableCount >= stableThreshold) {
-              // 即使内容稳定，也要检查来源链接
-              if (sourceCount >= 3) {
+              if (sourceCount >= 1) {
                 console.error(`AI 输出完成，内容长度: ${currentLength}，来源数: ${sourceCount}`);
                 return true;
               } else {
-                // 来源链接还没加载完，继续等待（只在首次提示）
-                if (stableCount === stableThreshold) {
-                  console.error(`内容稳定但来源链接不足 (${sourceCount})，继续等待...`);
-                }
-                stableCount = 0; // 重置稳定计数，继续等待
+                console.error(
+                  `内容已稳定但来源链接不足 (${sourceCount})，按降级策略返回以避免超时`
+                );
+                return true;
               }
             }
           }
@@ -1181,7 +1204,7 @@ export class AISearcher {
             log("CAPTCHA", "验证成功！正在获取搜索结果...");
 
             // 等待 AI 输出完成
-            await this.waitForStreamingComplete(page, 30);
+            await this.waitForStreamingComplete(page, 16);
 
             // 提取结果
             const extractedResult = await this.extractAiAnswer(page);
@@ -1440,16 +1463,11 @@ export class AISearcher {
         return await this.handleCaptcha(url, query);
       }
 
-      // 等待 AI 输出完成
-      await this.waitForStreamingComplete(this.page);
+      // 等待 AI 输出完成（优先保证在调用方 deadline 内返回）
+      await this.waitForStreamingComplete(this.page, 16);
 
-      // 等待来源链接渲染（来源链接在 AI 回答完成后才会完全加载）
-      console.error("等待来源链接渲染...");
-      
-      // 先等待一段时间让页面稳定
-      await this.page.waitForTimeout(3000);
-      
-      // 尝试等待非 Google 链接出现
+      // 短暂等待来源链接渲染（最佳努力，不阻塞过久）
+      console.error("短暂等待来源链接渲染（最多2秒）...");
       try {
         await this.page.waitForFunction(
           `(() => {
@@ -1463,13 +1481,13 @@ export class AISearcher {
                 nonGoogleCount++;
               }
             });
-            return nonGoogleCount >= 3;
+            return nonGoogleCount >= 1;
           })()`,
-          { timeout: 10000 }
+          { timeout: 2000 }
         );
-        console.error("检测到足够的来源链接");
+        console.error("检测到来源链接");
       } catch {
-        console.error("等待来源链接超时，继续提取");
+        console.error("来源链接未及时渲染，继续提取 AI 回答");
       }
 
       // 提取内容
@@ -1554,7 +1572,7 @@ export class AISearcher {
       // 等待 AI 回答加载
       await this.page.waitForTimeout(1000);
       await this.waitForAiContent(this.page);
-      await this.waitForStreamingComplete(this.page, 30);
+      await this.waitForStreamingComplete(this.page, 16);
 
       // 检查验证码
       const content = (await this.page.evaluate(

@@ -12,46 +12,15 @@ import { z } from "zod";
 import { AISearcher, SearchResult } from "./searcher.js";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
+import { getLogDir, getLogPath, getLogRetentionDays, initializeLogger, writeLog } from "./logger.js";
 
-// ============================================
-// 日志系统
-// ============================================
-const LOG_DIR = path.join(os.homedir(), ".huge-ai-search", "logs");
-const LOG_FILE = path.join(LOG_DIR, `search_${new Date().toISOString().split('T')[0]}.log`);
-
-// 确保日志目录存在
-try {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-  }
-} catch {
-  // 忽略创建目录失败
-}
+initializeLogger();
 
 /**
  * 写入日志文件
  */
 function log(level: "INFO" | "ERROR" | "DEBUG", message: string): void {
-  const timestamp = new Date().toISOString();
-  const logLine = `[${timestamp}] [${level}] ${message}\n`;
-  
-  // 输出到 stderr（MCP 标准）
-  console.error(message);
-  
-  // 同时写入日志文件
-  try {
-    fs.appendFileSync(LOG_FILE, logLine);
-  } catch {
-    // 忽略写入失败
-  }
-}
-
-/**
- * 获取日志文件路径（供用户查看）
- */
-function getLogPath(): string {
-  return LOG_FILE;
+  writeLog(level, message);
 }
 
 // 工具描述
@@ -163,6 +132,8 @@ function formatSearchResult(
   if (sessionId) {
     output += `🔑 **会话 ID**: \`${sessionId}\`\n\n`;
   }
+  output += `🧾 **运行日志**: \`${getLogPath()}\`\n\n`;
+  output += `📁 **日志目录**: \`${getLogDir()}\`（默认保留 ${getLogRetentionDays()} 天）\n\n`;
   output += `💡 **提示**: 如需深入了解，可以设置 \`follow_up: true\`${sessionId ? ` 并传入 \`session_id: "${sessionId}"\`` : ''} 进行追问，AI 会在当前对话上下文中继续回答。\n`;
 
   return output;
@@ -666,6 +637,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("INFO", `Huge AI Search MCP Server 已启动，日志文件: ${getLogPath()}`);
+  log("INFO", `日志目录: ${getLogDir()}（默认保留 ${getLogRetentionDays()} 天）`);
 }
 
 main().catch((error) => {
