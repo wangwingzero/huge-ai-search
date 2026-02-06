@@ -13,6 +13,7 @@ import { AISearcher, SearchResult } from "./searcher.js";
 import * as fs from "fs";
 import * as path from "path";
 import { getLogDir, getLogPath, getLogRetentionDays, initializeLogger, writeLog } from "./logger.js";
+import { GlobalConcurrencyCoordinator, GlobalLease } from "./coordinator.js";
 
 initializeLogger();
 
@@ -151,22 +152,39 @@ interface Session {
 
 // 会话存储：sessionId -> Session
 const sessions = new Map<string, Session>();
+let defaultSessionId: string | null = null;
 
-// 并发控制
+// 默认均衡配置（固定策略，不做用户分档选择）
 const MAX_CONCURRENT_SEARCHES = 3;
+const MAX_GLOBAL_CONCURRENT_SEARCHES = 4;
+const LOCAL_SLOT_WAIT_TIMEOUT_MS = 6000;
+const GLOBAL_SLOT_WAIT_TIMEOUT_MS = 8000;
+const GLOBAL_SLOT_LEASE_MS = 180000;
+const GLOBAL_SLOT_HEARTBEAT_MS = 3000;
+const GLOBAL_SLOT_RETRY_BASE_MS = 120;
+const GLOBAL_SLOT_RETRY_MAX_MS = 800;
+const REQUEST_TOTAL_BUDGET_MS = 55000;
+const REQUEST_BUDGET_SAFETY_MS = 3000;
+const REQUEST_MIN_EXECUTION_MS = 8000;
+const SEARCH_EXECUTION_TIMEOUT_MS = 42000;
+const SEARCHER_NAV_TIMEOUT_SECONDS = 45;
 const MAX_SESSIONS = 5; // 最大会话数
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟超时
 const SESSION_MAX_SEARCHES = 50; // 单会话最大搜索次数（超过后重建）
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 每分钟清理一次
 
 let currentSearches = 0;
+const globalCoordinator = new GlobalConcurrencyCoordinator({
+  maxSlots: MAX_GLOBAL_CONCURRENT_SEARCHES,
+  leaseMs: GLOBAL_SLOT_LEASE_MS,
+  heartbeatMs: GLOBAL_SLOT_HEARTBEAT_MS,
+  retryBaseMs: GLOBAL_SLOT_RETRY_BASE_MS,
+  retryMaxMs: GLOBAL_SLOT_RETRY_MAX_MS,
+});
 
 // 登录超时冷却机制
 let loginTimeoutTimestamp: number | null = null;
 const LOGIN_COOLDOWN_SECONDS = 300; // 5 分钟
-
-// 搜索超时时间（秒）
-const SEARCH_TIMEOUT_SECONDS = 120;
 
 // ============================================
 // 全局 CAPTCHA 处理状态
@@ -228,6 +246,30 @@ async function waitForCaptcha(timeoutMs: number = 5 * 60 * 1000): Promise<boolea
   }
 }
 
+function releaseLocalSearchSlot(): void {
+  currentSearches = Math.max(0, currentSearches - 1);
+  console.error(`释放本地搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`);
+}
+
+async function acquireLocalSearchSlot(timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+
+  while (currentSearches >= MAX_CONCURRENT_SEARCHES) {
+    if (Date.now() - start >= timeoutMs) {
+      return false;
+    }
+    await sleep(80 + Math.floor(Math.random() * 120));
+  }
+
+  currentSearches++;
+  console.error(`获取到本地搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`);
+  return true;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 生成会话 ID
  * 基于时间戳和随机数，确保唯一性
@@ -268,7 +310,7 @@ async function getOrCreateSession(sessionId?: string): Promise<{ sessionId: stri
   // 创建新会话
   const newSessionId = sessionId || generateSessionId();
   const newSession: Session = {
-    searcher: new AISearcher(60, true, newSessionId),
+    searcher: new AISearcher(SEARCHER_NAV_TIMEOUT_SECONDS, true, newSessionId),
     lastAccess: Date.now(),
     searchCount: 0,
   };
@@ -289,6 +331,9 @@ async function closeSession(sessionId: string): Promise<void> {
       console.error(`关闭会话 ${sessionId} 时出错: ${error}`);
     }
     sessions.delete(sessionId);
+    if (defaultSessionId === sessionId) {
+      defaultSessionId = null;
+    }
     
     // 清理会话数据目录，防止磁盘空间泄漏
     const sessionDataDir = path.join(process.cwd(), "browser_data", sessionId);
@@ -393,6 +438,7 @@ server.tool(
   },
   async (args) => {
     const { query, language, follow_up, session_id } = args;
+    const requestStartMs = Date.now();
 
     log("INFO",
       `收到工具调用: query='${query}', language=${language}, follow_up=${follow_up}, session_id=${session_id || '(新会话)'}`
@@ -431,58 +477,113 @@ server.tool(
       }
     }
 
-    // 并发控制
-    if (currentSearches >= MAX_CONCURRENT_SEARCHES) {
-      console.error(
-        `并发搜索数已达上限 (${MAX_CONCURRENT_SEARCHES})，等待中...`
-      );
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "搜索繁忙，请稍后重试",
-          },
-        ],
-      };
-    }
+    let localSlotAcquired = false;
+    let globalLease: GlobalLease | null = null;
 
-    currentSearches++;
-    console.error(
-      `获取到搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`
-    );
+    try {
+      // 检查是否有 CAPTCHA 正在处理
+      if (captchaInProgress) {
+        console.error("检测到 CAPTCHA 正在处理，等待完成...");
+        const shouldRetry = await waitForCaptcha();
+        if (!shouldRetry) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "搜索等待验证超时，请稍后重试",
+              },
+            ],
+          };
+        }
+        // CAPTCHA 处理完成，继续执行搜索
+        console.error("CAPTCHA 处理完成，继续执行搜索");
+      }
 
-    // 检查是否有 CAPTCHA 正在处理
-    if (captchaInProgress) {
-      console.error("检测到 CAPTCHA 正在处理，等待完成...");
-      const shouldRetry = await waitForCaptcha();
-      if (!shouldRetry) {
+      // 本地并发槽位（同进程）
+      localSlotAcquired = await acquireLocalSearchSlot(LOCAL_SLOT_WAIT_TIMEOUT_MS);
+      if (!localSlotAcquired) {
+        console.error(
+          `本地并发槽位获取超时（${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms），并发上限=${MAX_CONCURRENT_SEARCHES}`
+        );
         return {
           content: [
             {
               type: "text" as const,
-              text: "搜索等待验证超时，请稍后重试",
+              text:
+                `搜索繁忙：当前项目并发已满（${MAX_CONCURRENT_SEARCHES}）\n` +
+                `请稍后重试。`,
             },
           ],
         };
       }
-      // CAPTCHA 处理完成，继续执行搜索
-      console.error("CAPTCHA 处理完成，继续执行搜索");
-    }
 
-    // 获取或创建会话
-    const { sessionId: activeSessionId, session } = await getOrCreateSession(
-      follow_up ? session_id : undefined // 追问时复用会话，新搜索创建新会话
-    );
+      // 全局并发槽位（跨项目/跨进程）
+      globalLease = await globalCoordinator.acquire(GLOBAL_SLOT_WAIT_TIMEOUT_MS);
+      if (!globalLease) {
+        console.error(
+          `全局并发槽位获取超时（${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms），全局上限=${MAX_GLOBAL_CONCURRENT_SEARCHES}`
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `搜索繁忙：其他项目正在占用全局搜索资源（上限 ${MAX_GLOBAL_CONCURRENT_SEARCHES}）\n` +
+                `请稍后重试。`,
+            },
+          ],
+        };
+      }
+      console.error(
+        `获取到全局搜索槽位: ${globalLease.slot}/${MAX_GLOBAL_CONCURRENT_SEARCHES}`
+      );
 
-    try {
+      // 获取或创建会话
+      const preferredSessionId = follow_up
+        ? session_id
+        : defaultSessionId && sessions.has(defaultSessionId)
+          ? defaultSessionId
+          : undefined;
+      const { sessionId: activeSessionId, session } = await getOrCreateSession(preferredSessionId);
+      if (!follow_up) {
+        defaultSessionId = activeSessionId;
+      }
+
       const searcherInstance = session.searcher;
       session.searchCount++;
 
-      // 设置超时
+      const elapsedBeforeExecutionMs = Date.now() - requestStartMs;
+      const remainingBudgetMs =
+        REQUEST_TOTAL_BUDGET_MS - elapsedBeforeExecutionMs - REQUEST_BUDGET_SAFETY_MS;
+      if (remainingBudgetMs < REQUEST_MIN_EXECUTION_MS) {
+        console.error(
+          `请求预算不足，已耗时 ${elapsedBeforeExecutionMs}ms，剩余预算 ${remainingBudgetMs}ms`
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `搜索繁忙：本次请求排队耗时较长（${elapsedBeforeExecutionMs}ms），` +
+                `为避免 60 秒超时已提前终止，请直接重试。`,
+            },
+          ],
+        };
+      }
+
+      const executionTimeoutMs = Math.min(
+        SEARCH_EXECUTION_TIMEOUT_MS,
+        remainingBudgetMs
+      );
+      console.error(
+        `执行预算: queue=${elapsedBeforeExecutionMs}ms, execution<=${executionTimeoutMs}ms, total<=${REQUEST_TOTAL_BUDGET_MS}ms`
+      );
+
+      // 设置执行超时（受总预算约束）
       const timeoutPromise = new Promise<SearchResult>((_, reject) => {
         setTimeout(() => {
-          reject(new Error(`搜索超时（${SEARCH_TIMEOUT_SECONDS}秒）`));
-        }, SEARCH_TIMEOUT_SECONDS * 1000);
+          reject(new Error(`搜索超时（${executionTimeoutMs}ms）`));
+        }, executionTimeoutMs);
       });
 
       let searchPromise: Promise<SearchResult>;
@@ -512,8 +613,26 @@ server.tool(
         console.error("CAPTCHA 已被其他请求处理，自动重试搜索...");
         // 标记 CAPTCHA 处理结束（可能是其他请求完成的）
         markCaptchaEnd();
-        // 重新执行搜索（此时认证状态应该已更新）
-        const retryResult = await searcherInstance.search(query, language);
+        const elapsedBeforeRetryMs = Date.now() - requestStartMs;
+        const retryRemainingMs =
+          REQUEST_TOTAL_BUDGET_MS - elapsedBeforeRetryMs - REQUEST_BUDGET_SAFETY_MS;
+        if (retryRemainingMs < REQUEST_MIN_EXECUTION_MS) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "搜索验证已通过，但本次调用剩余时间不足，请立即重试。",
+              },
+            ],
+          };
+        }
+        const retryTimeoutMs = Math.min(SEARCH_EXECUTION_TIMEOUT_MS, retryRemainingMs);
+        const retryResult = await Promise.race([
+          searcherInstance.search(query, language),
+          new Promise<SearchResult>((_, reject) =>
+            setTimeout(() => reject(new Error(`重试搜索超时（${retryTimeoutMs}ms）`)), retryTimeoutMs)
+          ),
+        ]);
         if (retryResult.success) {
           const output = formatSearchResult(retryResult, follow_up, activeSessionId);
           console.error(`重试搜索成功，返回结果长度: ${output.length}`);
@@ -626,8 +745,19 @@ server.tool(
         ],
       };
     } finally {
-      currentSearches--;
-      console.error(`释放搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`);
+      if (globalLease) {
+        try {
+          await globalCoordinator.release(globalLease);
+          console.error(
+            `释放全局搜索槽位: ${globalLease.slot}/${MAX_GLOBAL_CONCURRENT_SEARCHES}`
+          );
+        } catch (releaseError) {
+          console.error(`释放全局搜索槽位失败: ${releaseError}`);
+        }
+      }
+      if (localSlotAcquired) {
+        releaseLocalSearchSlot();
+      }
     }
   }
 );
@@ -638,6 +768,10 @@ async function main() {
   await server.connect(transport);
   log("INFO", `Huge AI Search MCP Server 已启动，日志文件: ${getLogPath()}`);
   log("INFO", `日志目录: ${getLogDir()}（默认保留 ${getLogRetentionDays()} 天）`);
+  log(
+    "INFO",
+    `均衡配置: local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout=${SEARCH_EXECUTION_TIMEOUT_MS}ms, totalBudget=${REQUEST_TOTAL_BUDGET_MS}ms, globalLockDir=${globalCoordinator.getLockDir()}`
+  );
 }
 
 main().catch((error) => {
