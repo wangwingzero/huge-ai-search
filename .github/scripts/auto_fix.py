@@ -22,6 +22,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-file", required=True, help="Path to write generated patch.")
     parser.add_argument("--attempt", type=int, default=1, help="Current fix attempt index.")
     parser.add_argument("--max-attempts", type=int, default=3, help="Maximum attempts.")
+    parser.add_argument("--validation-command", default="", help="Validation command used in CI.")
+    parser.add_argument("--allowed-regex", default="", help="Allowed file regex for patch paths.")
+    parser.add_argument("--max-files", type=int, default=0, help="Maximum changed files budget.")
+    parser.add_argument("--max-changed-lines", type=int, default=0, help="Maximum total changed lines budget.")
+    parser.add_argument("--max-log-chars", type=int, default=50000, help="Maximum characters from log tail.")
+    parser.add_argument(
+        "--max-snippet-chars",
+        type=int,
+        default=12000,
+        help="Maximum characters per file snippet.",
+    )
+    parser.add_argument(
+        "--max-candidate-files",
+        type=int,
+        default=20,
+        help="Maximum number of candidate files to include in prompt.",
+    )
     parser.add_argument("--repo-root", default=".", help="Repository root path.")
     return parser.parse_args()
 
@@ -39,7 +56,7 @@ def run_git_ls_files(repo_root: Path) -> List[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def detect_candidate_files(log_text: str, repo_root: Path, tracked_files: List[str]) -> List[str]:
+def detect_candidate_files(log_text: str, repo_root: Path, tracked_files: List[str], max_candidates: int) -> List[str]:
     tracked_set: Set[str] = set(tracked_files)
     candidates: List[str] = []
     suffix_map = {f"/{path}": path for path in tracked_files}
@@ -78,10 +95,10 @@ def detect_candidate_files(log_text: str, repo_root: Path, tracked_files: List[s
             if len(candidates) >= 12:
                 break
 
-    return candidates[:20]
+    return candidates[:max_candidates]
 
 
-def read_file_snippet(path: Path, max_chars: int = 12000) -> str:
+def read_file_snippet(path: Path, max_chars: int) -> str:
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -116,7 +133,27 @@ def normalize_patch(text: str) -> str:
     return cleaned + ("\n" if not cleaned.endswith("\n") else "")
 
 
-def build_prompts(log_text: str, file_context: str, attempt: int, max_attempts: int) -> tuple[str, str]:
+def build_prompts(
+    log_text: str,
+    file_context: str,
+    attempt: int,
+    max_attempts: int,
+    validation_command: str,
+    allowed_regex: str,
+    max_files: int,
+    max_changed_lines: int,
+) -> tuple[str, str]:
+    guardrail_lines: List[str] = []
+    if validation_command:
+        guardrail_lines.append(f"- Validation command to make green: {validation_command}")
+    if allowed_regex:
+        guardrail_lines.append(f"- Allowed file path regex: {allowed_regex}")
+    if max_files > 0:
+        guardrail_lines.append(f"- Maximum changed files: {max_files}")
+    if max_changed_lines > 0:
+        guardrail_lines.append(f"- Maximum total changed lines: {max_changed_lines}")
+    guardrails = "\n".join(guardrail_lines) if guardrail_lines else "- No extra guardrails provided."
+
     system_prompt = (
         "You are an automated CI code-fix bot.\n"
         "Return only a valid unified git diff patch.\n"
@@ -126,10 +163,13 @@ def build_prompts(log_text: str, file_context: str, attempt: int, max_attempts: 
         "3) You may edit dependency/config files only when required.\n"
         "4) Use repository-relative paths in diff headers.\n"
         "5) Output patch text only, no markdown, no explanation.\n"
-        "6) If you cannot produce a safe fix, output exactly: NO_FIX"
+        "6) Respect all guardrails and budgets provided by the user.\n"
+        "7) If you cannot produce a safe fix, output exactly: NO_FIX"
     )
     user_prompt = (
         f"Attempt: {attempt}/{max_attempts}\n\n"
+        "Patch guardrails:\n"
+        f"{guardrails}\n\n"
         "CI failure log:\n"
         "----- LOG START -----\n"
         f"{log_text}\n"
@@ -208,15 +248,20 @@ def main() -> int:
         return 2
 
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    if len(log_text) > 50000:
-        log_text = log_text[-50000:]
+    if len(log_text) > args.max_log_chars:
+        log_text = log_text[-args.max_log_chars :]
 
     tracked_files = run_git_ls_files(repo_root)
-    candidates = detect_candidate_files(log_text, repo_root, tracked_files)
+    candidates = detect_candidate_files(
+        log_text=log_text,
+        repo_root=repo_root,
+        tracked_files=tracked_files,
+        max_candidates=args.max_candidate_files,
+    )
     file_blocks: List[str] = []
     for rel_path in candidates:
         abs_path = repo_root / rel_path
-        snippet = read_file_snippet(abs_path)
+        snippet = read_file_snippet(abs_path, max_chars=args.max_snippet_chars)
         if snippet:
             file_blocks.append(f"### {rel_path}\n{snippet}")
     file_context = "\n\n".join(file_blocks)
@@ -226,6 +271,10 @@ def main() -> int:
         file_context=file_context,
         attempt=args.attempt,
         max_attempts=args.max_attempts,
+        validation_command=args.validation_command.strip(),
+        allowed_regex=args.allowed_regex.strip(),
+        max_files=args.max_files,
+        max_changed_lines=args.max_changed_lines,
     )
 
     try:

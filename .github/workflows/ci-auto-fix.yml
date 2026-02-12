@@ -1,6 +1,43 @@
 name: ci-auto-fix
 
 on:
+  workflow_call:
+    inputs:
+      install_command:
+        required: false
+        type: string
+        default: npm ci
+      validation_command:
+        required: false
+        type: string
+        default: npm run build
+      max_attempts:
+        required: false
+        type: number
+        default: 3
+      max_files:
+        required: false
+        type: number
+        default: 8
+      max_changed_lines:
+        required: false
+        type: number
+        default: 300
+      allowed_regex:
+        required: false
+        type: string
+        default: "^(src/|extensions/huge-ai-chat/src/|package\\.json|package-lock\\.json|tsconfig\\.json|extensions/huge-ai-chat/package\\.json|extensions/huge-ai-chat/package-lock\\.json|extensions/huge-ai-chat/tsconfig\\.json)$"
+      codex_model:
+        required: false
+        type: string
+        default: gpt-5-codex
+    secrets:
+      CODEX_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      CODEX_API_ENDPOINT:
+        required: false
   push:
     branches:
       - main
@@ -8,6 +45,35 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      install_command:
+        description: "Install command"
+        required: false
+        default: "npm ci"
+      validation_command:
+        description: "Validation command"
+        required: false
+        default: "npm run build"
+      max_attempts:
+        description: "Maximum auto-fix attempts"
+        required: false
+        default: "3"
+      max_files:
+        description: "Maximum changed files allowed"
+        required: false
+        default: "8"
+      max_changed_lines:
+        description: "Maximum total changed lines"
+        required: false
+        default: "300"
+      allowed_regex:
+        description: "Allowed file regex"
+        required: false
+        default: "^(src/|extensions/huge-ai-chat/src/|package\\.json|package-lock\\.json|tsconfig\\.json|extensions/huge-ai-chat/package\\.json|extensions/huge-ai-chat/package-lock\\.json|extensions/huge-ai-chat/tsconfig\\.json)$"
+      codex_model:
+        description: "Model id"
+        required: false
+        default: "gpt-5-codex"
 
 permissions:
   contents: read
@@ -25,6 +91,7 @@ jobs:
       pull-requests: write
     env:
       AUTO_FIX_COMMAND: npm run build
+      AUTO_FIX_INSTALL_COMMAND: npm ci
       AUTO_FIX_MAX_ATTEMPTS: 3
       AUTO_FIX_MAX_FILES: 8
       AUTO_FIX_MAX_CHANGED_LINES: 300
@@ -47,8 +114,60 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Apply workflow_call inputs
+        if: github.event_name == 'workflow_call'
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.install_command }}" ]; then
+            echo "AUTO_FIX_INSTALL_COMMAND=${{ inputs.install_command }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.validation_command }}" ]; then
+            echo "AUTO_FIX_COMMAND=${{ inputs.validation_command }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.max_attempts }}" ]; then
+            echo "AUTO_FIX_MAX_ATTEMPTS=${{ inputs.max_attempts }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.max_files }}" ]; then
+            echo "AUTO_FIX_MAX_FILES=${{ inputs.max_files }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.max_changed_lines }}" ]; then
+            echo "AUTO_FIX_MAX_CHANGED_LINES=${{ inputs.max_changed_lines }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.allowed_regex }}" ]; then
+            echo "AUTO_FIX_ALLOWED_REGEX=${{ inputs.allowed_regex }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ inputs.codex_model }}" ]; then
+            echo "CODEX_MODEL=${{ inputs.codex_model }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Apply workflow_dispatch inputs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.install_command }}" ]; then
+            echo "AUTO_FIX_INSTALL_COMMAND=${{ github.event.inputs.install_command }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.validation_command }}" ]; then
+            echo "AUTO_FIX_COMMAND=${{ github.event.inputs.validation_command }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.max_attempts }}" ]; then
+            echo "AUTO_FIX_MAX_ATTEMPTS=${{ github.event.inputs.max_attempts }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.max_files }}" ]; then
+            echo "AUTO_FIX_MAX_FILES=${{ github.event.inputs.max_files }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.max_changed_lines }}" ]; then
+            echo "AUTO_FIX_MAX_CHANGED_LINES=${{ github.event.inputs.max_changed_lines }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.allowed_regex }}" ]; then
+            echo "AUTO_FIX_ALLOWED_REGEX=${{ github.event.inputs.allowed_regex }}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.codex_model }}" ]; then
+            echo "CODEX_MODEL=${{ github.event.inputs.codex_model }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Install dependencies
-        run: npm ci
+        run: $AUTO_FIX_INSTALL_COMMAND
 
       - name: Run validation
         id: validation
@@ -79,7 +198,11 @@ jobs:
               --log-file build_log.txt \
               --output-file codex.patch \
               --attempt "$attempt" \
-              --max-attempts "$AUTO_FIX_MAX_ATTEMPTS"; then
+              --max-attempts "$AUTO_FIX_MAX_ATTEMPTS" \
+              --validation-command "$AUTO_FIX_COMMAND" \
+              --allowed-regex "$AUTO_FIX_ALLOWED_REGEX" \
+              --max-files "$AUTO_FIX_MAX_FILES" \
+              --max-changed-lines "$AUTO_FIX_MAX_CHANGED_LINES"; then
               echo "Auto-fix script failed on attempt ${attempt}."
               break
             fi
@@ -133,6 +256,16 @@ jobs:
           if [ "$fixed" != "true" ]; then
             exit 1
           fi
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-auto-fix-logs-${{ github.run_id }}
+          path: |
+            build_log.txt
+            codex.patch
+          if-no-files-found: ignore
 
       - name: Fail if initial validation failed and auto-fix did not run
         if: steps.validation.outcome == 'failure' && steps.autofix.conclusion == 'skipped'
