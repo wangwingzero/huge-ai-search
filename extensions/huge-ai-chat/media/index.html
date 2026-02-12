@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} https: data:; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Huge AI Chat</title>
+  <link rel="stylesheet" href="{{styleUri}}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="left-actions">
+        <button id="newThreadBtn" class="btn">New Chat</button>
+        <label class="lang-wrap">
+          <span>Language</span>
+          <select id="languageSelect">
+            <option value="zh-CN">zh-CN</option>
+            <option value="en-US">en-US</option>
+            <option value="ja-JP">ja-JP</option>
+            <option value="ko-KR">ko-KR</option>
+            <option value="de-DE">de-DE</option>
+            <option value="fr-FR">fr-FR</option>
+          </select>
+        </label>
+      </div>
+      <div class="right-actions">
+        <button id="clearHistoryBtn" class="btn danger">Clear History</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <aside class="sidebar">
+        <div class="sidebar-title">Threads</div>
+        <ul id="threadList" class="thread-list"></ul>
+      </aside>
+
+      <section class="chat">
+        <div id="authBanner" class="auth-banner hidden">
+          <span id="authText"></span>
+          <div class="auth-actions">
+            <button id="runSetupBtn" class="btn">Run Setup</button>
+            <button id="retryBtn" class="btn primary">Retry</button>
+          </div>
+        </div>
+
+        <div id="messages" class="messages"></div>
+
+        <div class="composer">
+          <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="sendBtn" class="btn primary">Send</button>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

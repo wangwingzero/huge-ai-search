@@ -1,0 +1,119 @@
+name: huge-ai-chat
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "huge-ai-chat-v*"
+    paths:
+      - "extensions/huge-ai-chat/**"
+      - ".github/workflows/huge-ai-chat.yml"
+  pull_request:
+    paths:
+      - "extensions/huge-ai-chat/**"
+      - ".github/workflows/huge-ai-chat.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to VS Marketplace and Open VSX"
+        required: false
+        type: boolean
+        default: false
+  release:
+    types:
+      - published
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/huge-ai-chat
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extensions/huge-ai-chat/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Package VSIX
+        run: npm run package:vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: huge-ai-chat-vsix
+          path: extensions/huge-ai-chat/artifacts/*.vsix
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/huge-ai-chat-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: huge-ai-chat-vsix
+          path: dist-vsix
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extensions/huge-ai-chat/package-lock.json
+
+      - name: Install dependencies (release checks)
+        working-directory: extensions/huge-ai-chat
+        run: npm ci
+
+      - name: Resolve VSIX path
+        run: |
+          VSIX_PATH="$(ls dist-vsix/*.vsix | head -n 1)"
+          if [ -z "$VSIX_PATH" ]; then
+            echo "VSIX artifact not found."
+            exit 1
+          fi
+          echo "VSIX_PATH=$VSIX_PATH" >> "$GITHUB_ENV"
+
+      - name: Validate release readiness (publisher + OpenVSX secret)
+        working-directory: extensions/huge-ai-chat
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: node scripts/check-release-readiness.js --require-ovsx
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish "$VSIX_PATH" -p "$OVSX_PAT"
+
+      - name: Validate VS Marketplace secret (optional)
+        if: ${{ secrets.VSCE_PAT != '' }}
+        working-directory: extensions/huge-ai-chat
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: node scripts/check-release-readiness.js --require-vsce
+
+      - name: Publish to Visual Studio Marketplace (optional)
+        if: ${{ secrets.VSCE_PAT != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx @vscode/vsce publish --packagePath "$VSIX_PATH" --pat "$VSCE_PAT"

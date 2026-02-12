@@ -1,0 +1,133 @@
+{
+  "name": "huge-ai-chat",
+  "publisher": "hudawang",
+  "displayName": "Huge AI Chat",
+  "description": "在 VS Code 中直接与 Google AI Mode 对话（复用 huge-ai-search MCP）",
+  "version": "0.1.0",
+  "author": "TigerWang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wangwingzero/huge-ai-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wangwingzero/huge-ai-search/issues"
+  },
+  "homepage": "https://github.com/wangwingzero/huge-ai-search/tree/main/extensions/huge-ai-chat",
+  "keywords": [
+    "vscode",
+    "google",
+    "ai",
+    "mcp",
+    "search",
+    "chat"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:hugeAiChat.openChat",
+    "onCommand:hugeAiChat.newThread",
+    "onCommand:hugeAiChat.runSetup",
+    "onCommand:hugeAiChat.clearHistory"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hugeAiChat.openChat",
+        "title": "Huge AI Chat: Open Chat",
+        "category": "Huge AI Chat"
+      },
+      {
+        "command": "hugeAiChat.newThread",
+        "title": "Huge AI Chat: New Thread",
+        "category": "Huge AI Chat"
+      },
+      {
+        "command": "hugeAiChat.runSetup",
+        "title": "Huge AI Chat: Run Login Setup",
+        "category": "Huge AI Chat"
+      },
+      {
+        "command": "hugeAiChat.clearHistory",
+        "title": "Huge AI Chat: Clear History",
+        "category": "Huge AI Chat"
+      }
+    ],
+    "configuration": {
+      "title": "Huge AI Chat",
+      "properties": {
+        "hugeAiChat.defaultLanguage": {
+          "type": "string",
+          "default": "zh-CN",
+          "enum": [
+            "zh-CN",
+            "en-US",
+            "ja-JP",
+            "ko-KR",
+            "de-DE",
+            "fr-FR"
+          ],
+          "description": "默认搜索语言。"
+        },
+        "hugeAiChat.maxThreads": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "最多保留的聊天线程数量。"
+        },
+        "hugeAiChat.mcp.command": {
+          "type": "string",
+          "default": "",
+          "description": "可选。覆盖 MCP Server 启动命令。"
+        },
+        "hugeAiChat.mcp.args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "可选。覆盖 MCP Server 启动参数。"
+        },
+        "hugeAiChat.mcp.cwd": {
+          "type": "string",
+          "default": "",
+          "description": "可选。MCP Server 工作目录。"
+        },
+        "hugeAiChat.mcp.env": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "可选。传递给 MCP 子进程的额外环境变量。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"try{require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('artifacts',{recursive:true,force:true});}catch(e){}\"",
+    "check:release": "node scripts/check-release-readiness.js",
+    "check:publish-secrets": "node scripts/check-release-readiness.js --require-secrets",
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "npm run check:release && npm run compile && node --test tests/**/*.test.js",
+    "package:vsix": "npm run check:release && npm run compile && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && npx @vscode/vsce package --no-dependencies -o artifacts/huge-ai-chat.vsix",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.7.1",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "ovsx": "^0.10.4",
+    "typescript": "^5.3.0"
+  }
+}
