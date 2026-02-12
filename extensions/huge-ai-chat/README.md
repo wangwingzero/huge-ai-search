@@ -73,3 +73,4 @@ code --install-extension artifacts/huge-ai-chat.vsix
 
 - 开发模式会优先尝试复用 monorepo 根目录下的 `dist/index.js` 作为 MCP Server。
 - 若本地入口不存在，则回退到 `npx -y huge-ai-search@latest`。
+- 用户无需手动安装 `huge-ai-search` / `huge-ai-research` MCP；插件会在首次打开后自动预热连接（失败时会在状态区提示如何恢复）。

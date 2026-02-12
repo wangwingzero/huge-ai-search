@@ -6,13 +6,39 @@ import { McpClientManager } from "../mcp/McpClientManager";
 import { ThreadStore } from "./ThreadStore";
 import { isAuthRelatedError, parseSearchToolText } from "./responseFormatter";
 import {
+  ChatStatusKind,
   HostToPanelMessage,
   PanelToHostMessage,
   SearchLanguage,
 } from "./types";
 
+const SEARCH_REQUEST_TIMEOUT_MS = 120_000;
+
 function getNonce(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function isSearchLanguage(value: unknown): value is SearchLanguage {
@@ -70,6 +96,7 @@ export class ChatController implements vscode.Disposable {
   private panelDisposables: vscode.Disposable[] = [];
   private readonly pendingThreads = new Set<string>();
   private readonly lastQueryByThread = new Map<string, string>();
+  private warmupTask: Promise<void> | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -100,6 +127,7 @@ export class ChatController implements vscode.Disposable {
     this.panel.webview.html = this.getWebviewHtml(this.panel.webview);
     this.installPanelListeners(this.panel);
     this.postStateFull();
+    this.ensureMcpWarmup();
   }
 
   async createThreadFromCommand(): Promise<void> {
@@ -180,6 +208,7 @@ export class ChatController implements vscode.Disposable {
     switch (payload.type) {
       case "panel/ready":
         this.postStateFull();
+        this.ensureMcpWarmup();
         return;
       case "thread/create": {
         const language = isSearchLanguage(payload.language)
@@ -241,6 +270,12 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     if (this.pendingThreads.has(threadId)) {
+      this.postStatus(
+        "warning",
+        "当前线程正在处理中",
+        "上一条请求尚未完成，暂时不能重复发送。",
+        "请等待当前请求完成，或稍后点击 Retry。"
+      );
       void vscode.window.showInformationMessage("当前线程仍在处理中，请稍候。");
       return;
     }
@@ -275,6 +310,13 @@ export class ChatController implements vscode.Disposable {
       threadId,
       messageId: pendingMessage.id,
     });
+    this.postStatus(
+      "progress",
+      "请求已提交",
+      "正在准备调用 Google AI 搜索服务。",
+      "可在下方继续输入，当前请求完成后再发送下一条。",
+      threadId
+    );
 
     try {
       const latestThread = this.store.getThread(threadId);
@@ -282,12 +324,32 @@ export class ChatController implements vscode.Disposable {
         throw new Error("线程不存在。");
       }
 
-      const resultText = await this.mcpManager.callSearch({
-        query: text,
-        language: latestThread.language,
-        follow_up: Boolean(latestThread.sessionId),
-        session_id: latestThread.sessionId,
-      });
+      this.postStatus(
+        "progress",
+        "正在调用搜索服务",
+        Boolean(latestThread.sessionId) ? "当前为追问模式，将复用历史会话上下文。" : "当前为新会话，将创建新的搜索会话。",
+        "如果长时间无响应，可执行 “Huge AI Chat: Run Login Setup”。",
+        threadId
+      );
+      this.output.appendLine(`[Chat] Search start: thread=${threadId}, follow_up=${Boolean(latestThread.sessionId)}`);
+      const resultText = await withTimeout(
+        this.mcpManager.callSearch({
+          query: text,
+          language: latestThread.language,
+          follow_up: Boolean(latestThread.sessionId),
+          session_id: latestThread.sessionId,
+        }),
+        SEARCH_REQUEST_TIMEOUT_MS,
+        `请求超时（${Math.floor(SEARCH_REQUEST_TIMEOUT_MS / 1000)} 秒），请重试或先执行 “Huge AI Chat: Run Login Setup”。`
+      );
+      this.output.appendLine(`[Chat] Search done: thread=${threadId}`);
+      this.postStatus(
+        "progress",
+        "已收到响应",
+        "正在解析并渲染回答内容。",
+        undefined,
+        threadId
+      );
 
       const parsed = parseSearchToolText(resultText);
       if (parsed.sessionId && parsed.sessionId !== latestThread.sessionId) {
@@ -307,6 +369,15 @@ export class ChatController implements vscode.Disposable {
           error: parsed.answer,
           canRetry: true,
         });
+        this.postStatus(
+          parsed.isAuthError ? "warning" : "error",
+          parsed.isAuthError ? "需要登录验证" : "请求失败",
+          parsed.answer,
+          parsed.isAuthError
+            ? "请点击 Run Setup 完成登录/验证码，然后点击 Retry。"
+            : "请点击 Retry 重试，或更换问题后再次发送。",
+          threadId
+        );
 
         if (parsed.isAuthError) {
           await this.runSetupFlow();
@@ -324,6 +395,13 @@ export class ChatController implements vscode.Disposable {
         threadId,
         message: message || { ...pendingMessage, content: parsed.renderedMarkdown, status: "done" },
       });
+      this.postStatus(
+        "success",
+        "回答已生成",
+        parsed.sessionId ? `会话已更新：${parsed.sessionId}` : "本次回答已完成。",
+        "可以继续追问，系统会自动保持上下文。",
+        threadId
+      );
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       const markdown = `## ❌ 请求失败\n\n${errorText}`;
@@ -339,6 +417,15 @@ export class ChatController implements vscode.Disposable {
         error: errorText,
         canRetry: true,
       });
+      this.postStatus(
+        isAuthRelatedError(errorText) ? "warning" : "error",
+        "请求执行失败",
+        errorText,
+        isAuthRelatedError(errorText)
+          ? "请点击 Run Setup 完成登录验证后重试。"
+          : "请点击 Retry 重试；若持续失败，请查看 Output: Huge AI Chat 日志。",
+        threadId
+      );
 
       if (isAuthRelatedError(errorText)) {
         await this.runSetupFlow();
@@ -349,6 +436,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async runSetupFlow(): Promise<{ success: boolean; message: string }> {
+    this.postStatus(
+      "progress",
+      "正在启动登录流程",
+      "将打开浏览器执行 Google 账号登录/验证码验证。",
+      "完成后返回 VS Code 点击 Retry。"
+    );
     this.postMessage({ type: "auth/running" });
     const result = await this.setupRunner.ensureRunning();
     this.postMessage({
@@ -356,10 +449,41 @@ export class ChatController implements vscode.Disposable {
       success: result.success,
       message: result.message,
     });
+    this.postStatus(
+      result.success ? "success" : "warning",
+      result.success ? "登录流程完成" : "登录流程未完成",
+      result.message,
+      result.success ? "请点击 Retry 继续当前请求。" : "请再次执行 Run Setup 并完成所有步骤。"
+    );
     return {
       success: result.success,
       message: result.message,
     };
+  }
+
+  private ensureMcpWarmup(): void {
+    if (this.warmupTask) {
+      return;
+    }
+
+    this.warmupTask = (async () => {
+      this.postStatus(
+        "progress",
+        "正在准备搜索服务",
+        "首次会自动连接 MCP 搜索服务，可能需要几秒。",
+        "无需手动安装 huge-ai-search MCP；连接完成后即可直接提问。"
+      );
+
+      const result = await this.mcpManager.warmup();
+      if (result.ready) {
+        this.postStatus("success", "搜索服务已就绪", result.detail, result.suggestion);
+        return;
+      }
+
+      this.postStatus("warning", "搜索服务暂未就绪", result.detail, result.suggestion);
+    })().finally(() => {
+      this.warmupTask = null;
+    });
   }
 
   private postStateFull(): void {
@@ -373,6 +497,26 @@ export class ChatController implements vscode.Disposable {
     this.postMessage({
       type: "state/updated",
       state: this.store.getState(),
+    });
+  }
+
+  private postStatus(
+    kind: ChatStatusKind,
+    title: string,
+    detail?: string,
+    suggestion?: string,
+    threadId?: string
+  ): void {
+    this.postMessage({
+      type: "chat/status",
+      status: {
+        kind,
+        title,
+        detail,
+        suggestion,
+        threadId,
+        at: Date.now(),
+      },
     });
   }
 

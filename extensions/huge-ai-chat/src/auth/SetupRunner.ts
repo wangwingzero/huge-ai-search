@@ -12,6 +12,31 @@ interface CommandSpec {
   args: string[];
 }
 
+interface SetupLaunchContext {
+  cwd?: string;
+  fallbackReason?: string;
+}
+
+function hasNonAsciiChars(value: string): boolean {
+  return /[^\u0000-\u007f]/.test(value);
+}
+
+function resolveSetupLaunchContext(): SetupLaunchContext {
+  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!cwd) {
+    return {};
+  }
+
+  // Avoid known Windows command execution issues on non-ASCII workspace paths.
+  if (process.platform === "win32" && hasNonAsciiChars(cwd)) {
+    return {
+      fallbackReason: `检测到工作区路径包含非 ASCII 字符，Windows 下可能导致 setup 命令启动失败: ${cwd}`,
+    };
+  }
+
+  return { cwd };
+}
+
 function getSanitizedEnv(extra?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -31,12 +56,12 @@ function getSetupCommand(): CommandSpec {
   if (process.platform === "win32") {
     return {
       command: "cmd",
-      args: ["/c", "npx", "-y", "-p", "huge-ai-search", "huge-ai-search-setup"],
+      args: ["/c", "npx", "-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup"],
     };
   }
   return {
     command: "npx",
-    args: ["-y", "-p", "huge-ai-search", "huge-ai-search-setup"],
+    args: ["-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup"],
   };
 }
 
@@ -64,11 +89,17 @@ export class SetupRunner {
   private runInternal(): Promise<SetupRunResult> {
     return new Promise<SetupRunResult>((resolve) => {
       const spec = getSetupCommand();
+      const launchContext = resolveSetupLaunchContext();
+      const cwd = launchContext.cwd;
       this.output.show(true);
       this.output.appendLine("[Setup] 开始执行登录验证流程...");
       this.output.appendLine(`[Setup] Command: ${spec.command} ${spec.args.join(" ")}`);
+      if (launchContext.fallbackReason) {
+        this.output.appendLine(`[Setup] 路径兼容回退: ${launchContext.fallbackReason}`);
+        this.output.appendLine("[Setup] 已回退为系统默认工作目录执行 setup。");
+      }
+      this.output.appendLine(`[Setup] CWD: ${cwd || "<default>"}`);
 
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       const child = spawn(spec.command, spec.args, {
         cwd,
         env: getSanitizedEnv(),

@@ -49,6 +49,17 @@ export interface ParsedSearchResponse {
   isAuthError: boolean;
 }
 
+export type ChatStatusKind = "idle" | "progress" | "success" | "warning" | "error";
+
+export interface ChatStatusSnapshot {
+  kind: ChatStatusKind;
+  title: string;
+  detail?: string;
+  suggestion?: string;
+  threadId?: string;
+  at: number;
+}
+
 export type PanelToHostMessage =
   | { type: "panel/ready" }
   | { type: "thread/create"; language?: SearchLanguage }
@@ -62,6 +73,7 @@ export type PanelToHostMessage =
 export type HostToPanelMessage =
   | { type: "state/full"; state: PersistedState }
   | { type: "state/updated"; state: PersistedState }
+  | { type: "chat/status"; status: ChatStatusSnapshot }
   | { type: "chat/pending"; threadId: string; messageId: string }
   | { type: "chat/answer"; threadId: string; message: ChatMessage }
   | {

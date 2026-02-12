@@ -27,7 +27,7 @@
 配置完 MCP 后，建议先运行一次设置命令完成 Google 账号登录：
 
 ```bash
-npx -p huge-ai-search huge-ai-search-setup
+npx -y -p huge-ai-search@latest huge-ai-search-setup
 ```
 
 会弹出 Edge 浏览器窗口，登录你的 Google 账号即可。有验证码就过一下，然后关掉浏览器。
@@ -157,6 +157,15 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
   }
 }
 ```
+
+### 推荐：Rules / Kiro Steering
+
+仓库根目录提供了 `huge-ai-search.md`，内容是“搜索优先 + 深度追问”的完整规范，推荐作为通用规则文件复用：
+
+- 在支持 `rules` 的客户端中：直接将 `huge-ai-search.md` 内容加入你的规则配置
+- 在 Kiro 中：推荐作为 `steering` 文档引入，约束代理在代码修改前先搜索并连续追问
+
+> 该文件路径：`./huge-ai-search.md`
 
 ### Codex CLI
 
@@ -407,7 +416,7 @@ A: 删除 `~/.huge-ai-search/browser_data/` 文件夹即可。
 A: 运行以下命令会弹出浏览器窗口，完成登录后关闭即可：
 
 ```bash
-npx -p huge-ai-search huge-ai-search-setup
+npx -y -p huge-ai-search@latest huge-ai-search-setup
 ```
 
 ## 技术栈

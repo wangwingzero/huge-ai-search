@@ -25,6 +25,7 @@
         </label>
       </div>
       <div class="right-actions">
+        <button id="copyThreadBtn" class="btn">Copy Thread</button>
         <button id="clearHistoryBtn" class="btn danger">Clear History</button>
       </div>
     </header>
@@ -42,6 +43,16 @@
             <button id="runSetupBtn" class="btn">Run Setup</button>
             <button id="retryBtn" class="btn primary">Retry</button>
           </div>
+        </div>
+
+        <div id="statusBar" class="status-bar status-idle" role="status" aria-live="polite">
+          <div class="status-head">
+            <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+            <span id="statusTitle" class="status-title">系统就绪</span>
+            <span id="statusTime" class="status-time"></span>
+          </div>
+          <div id="statusDetail" class="status-detail">等待你的提问。</div>
+          <div id="statusSuggestion" class="status-suggestion">输入问题后按 Enter 发送。</div>
         </div>
 
         <div id="messages" class="messages"></div>

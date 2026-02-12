@@ -39,10 +39,13 @@ chrome_browser_temp/
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 .kiro/
 *.swp
 *.swo
+.AGENTS.md
 
 # Testing
 .pytest_cache/
@@ -57,4 +60,8 @@ logs/
 image/
 
 # Private files
-linuxdo-post.md
+个人/
+docs/
+
+# VS Code extension build artifacts
+extensions/huge-ai-chat/artifacts/

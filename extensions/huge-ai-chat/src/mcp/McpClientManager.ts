@@ -16,10 +16,17 @@ export interface SearchToolArgs {
   session_id?: string;
 }
 
+export interface McpWarmupResult {
+  ready: boolean;
+  detail: string;
+  suggestion?: string;
+}
+
 interface ResolvedServerCommand {
   command: string;
   args: string[];
   cwd?: string;
+  source: "configured" | "development" | "npx-auto";
 }
 
 function getSanitizedEnv(extraEnv?: Record<string, string>): Record<string, string> {
@@ -42,6 +49,7 @@ export class McpClientManager {
   private transport: StdioClientTransport | null = null;
   private connecting: Promise<void> | null = null;
   private stderrHooked = false;
+  private lastResolvedCommand: ResolvedServerCommand | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -53,8 +61,40 @@ export class McpClientManager {
       return await this.callSearchOnce(args);
     } catch (firstError) {
       this.log(`[MCP] 首次调用失败，将尝试重连后重试: ${this.getErrorMessage(firstError)}`);
+      if (!this.shouldRetry(firstError)) {
+        throw this.toUserFacingError(firstError);
+      }
       await this.disconnect();
-      return this.callSearchOnce(args);
+      try {
+        return await this.callSearchOnce(args);
+      } catch (retryError) {
+        throw this.toUserFacingError(retryError);
+      }
+    }
+  }
+
+  async warmup(): Promise<McpWarmupResult> {
+    try {
+      await this.ensureConnected();
+      const resolved = this.lastResolvedCommand ?? this.resolveServerCommand();
+      const commandText = this.toCommandLine(resolved);
+      const modeLabel = this.getModeLabel(resolved.source);
+      return {
+        ready: true,
+        detail: `已连接搜索服务（${modeLabel}）：${commandText}`,
+        suggestion:
+          resolved.source === "npx-auto"
+            ? "无需手动安装 MCP；首次可能稍慢，后续会复用连接。"
+            : "现在可以直接发送问题，系统会复用当前连接。",
+      };
+    } catch (error) {
+      await this.disconnect();
+      return {
+        ready: false,
+        detail: this.toUserFacingError(error).message,
+        suggestion:
+          "可继续打开聊天界面；发送消息时会再次尝试连接。若持续失败，请检查 Node/npm、网络代理，或在设置中覆盖 hugeAiChat.mcp.command。",
+      };
     }
   }
 
@@ -101,6 +141,7 @@ export class McpClientManager {
 
   private async connectInternal(): Promise<void> {
     const resolved = this.resolveServerCommand();
+    this.lastResolvedCommand = resolved;
     const settings = vscode.workspace.getConfiguration("hugeAiChat");
     const extraEnv = settings.get<Record<string, string>>("mcp.env") || {};
 
@@ -221,6 +262,7 @@ export class McpClientManager {
         command: configuredCommand,
         args: configuredArgs,
         cwd: configuredCwd || undefined,
+        source: "configured",
       };
     }
 
@@ -231,6 +273,7 @@ export class McpClientManager {
           command: "node",
           args: [localEntry],
           cwd: path.dirname(path.dirname(localEntry)),
+          source: "development",
         };
       }
     }
@@ -240,6 +283,7 @@ export class McpClientManager {
         command: "cmd",
         args: ["/c", "npx", "-y", "huge-ai-search@latest"],
         cwd: configuredCwd || undefined,
+        source: "npx-auto",
       };
     }
 
@@ -247,6 +291,7 @@ export class McpClientManager {
       command: "npx",
       args: ["-y", "huge-ai-search@latest"],
       cwd: configuredCwd || undefined,
+      source: "npx-auto",
     };
   }
 
@@ -275,6 +320,71 @@ export class McpClientManager {
       return error.message;
     }
     return String(error);
+  }
+
+  private toCommandLine(resolved: ResolvedServerCommand): string {
+    return `${resolved.command} ${(resolved.args || []).join(" ")}`.trim();
+  }
+
+  private getModeLabel(source: ResolvedServerCommand["source"]): string {
+    switch (source) {
+      case "configured":
+        return "用户自定义";
+      case "development":
+        return "开发本地服务";
+      case "npx-auto":
+      default:
+        return "自动 npx";
+    }
+  }
+
+  private shouldRetry(error: unknown): boolean {
+    const message = this.getErrorMessage(error).toLowerCase();
+    if (
+      message.includes("enoent") ||
+      message.includes("command not found") ||
+      message.includes("not recognized as an internal or external command") ||
+      message.includes("e404")
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  private toUserFacingError(error: unknown): Error {
+    const raw = this.getErrorMessage(error);
+    const lower = raw.toLowerCase();
+    const resolved = this.lastResolvedCommand ?? this.resolveServerCommand();
+    const commandText = this.toCommandLine(resolved);
+
+    if (
+      lower.includes("enoent") ||
+      lower.includes("command not found") ||
+      lower.includes("not recognized as an internal or external command")
+    ) {
+      return new Error(
+        `无法启动搜索服务（命令不可用）：${commandText}\n` +
+          "请确认本机可用 Node.js/npm（含 npx），或在设置里指定 hugeAiChat.mcp.command。"
+      );
+    }
+
+    if (
+      lower.includes("econnreset") ||
+      lower.includes("etimedout") ||
+      lower.includes("enotfound") ||
+      lower.includes("econnrefused") ||
+      lower.includes("network")
+    ) {
+      return new Error(
+        "搜索服务连接失败（网络/代理异常）。\n" +
+          "无需手动安装 MCP，插件会自动通过 npx 拉起 huge-ai-search；请检查网络与代理后重试。"
+      );
+    }
+
+    return new Error(
+      `搜索服务不可用：${raw}\n` +
+        "若持续失败，请在设置中配置 hugeAiChat.mcp.command / hugeAiChat.mcp.args 指向可用服务。"
+    );
   }
 
   private log(line: string): void {

@@ -146,12 +146,33 @@ select {
   font-size: 12px;
 }
 
+.thread-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.thread-time {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.2;
+}
+
+.thread-item.active .thread-time {
+  color: inherit;
+  opacity: 0.85;
+}
+
 .thread-delete {
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
   opacity: 0.7;
+  align-self: flex-start;
+  margin-top: 1px;
 }
 
 .thread-delete:hover {
@@ -236,6 +257,34 @@ select {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mini-btn {
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.mini-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.message-body {
+  min-width: 0;
 }
 
 .message h1,
@@ -254,6 +303,7 @@ select {
   border-radius: 6px;
   overflow: auto;
   padding: 8px;
+  margin: 0;
 }
 
 .message code {
@@ -261,8 +311,50 @@ select {
   font-size: 12px;
 }
 
+.message p code,
+.message li code {
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.message pre code {
+  display: block;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+
 .message a {
   color: var(--vscode-textLink-foreground);
+}
+
+.code-block {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+}
+
+.code-lang {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  text-transform: lowercase;
+}
+
+.copy-code-btn {
+  padding: 1px 8px;
 }
 
 .composer {
@@ -282,4 +374,88 @@ select {
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   padding: 8px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status-bar {
+  margin: 0 10px 10px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-panel-border);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+}
+
+.status-title {
+  font-weight: 600;
+}
+
+.status-time {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-detail {
+  color: var(--vscode-foreground);
+}
+
+.status-suggestion {
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-progress {
+  border-left-color: var(--vscode-charts-blue, var(--vscode-focusBorder));
+}
+
+.status-progress .status-dot {
+  background: var(--vscode-charts-blue, var(--vscode-focusBorder));
+}
+
+.status-success {
+  border-left-color: var(--vscode-testing-iconPassed, #2ea043);
+}
+
+.status-success .status-dot {
+  background: var(--vscode-testing-iconPassed, #2ea043);
+}
+
+.status-warning {
+  border-left-color: var(--vscode-inputValidation-warningBorder);
+}
+
+.status-warning .status-dot {
+  background: var(--vscode-inputValidation-warningBorder);
+}
+
+.status-error {
+  border-left-color: var(--vscode-inputValidation-errorBorder);
+}
+
+.status-error .status-dot {
+  background: var(--vscode-inputValidation-errorBorder);
+}
+
+.status-idle {
+  border-left-color: var(--vscode-panel-border);
 }

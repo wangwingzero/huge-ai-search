@@ -1464,7 +1464,7 @@ export class AISearcher {
       }
 
       // 等待 AI 输出完成（优先保证在调用方 deadline 内返回）
-      await this.waitForStreamingComplete(this.page, 16);
+      await this.waitForStreamingComplete(this.page, 10);
 
       // 短暂等待来源链接渲染（最佳努力，不阻塞过久）
       console.error("短暂等待来源链接渲染（最多2秒）...");
@@ -1483,7 +1483,8 @@ export class AISearcher {
             });
             return nonGoogleCount >= 1;
           })()`,
-          { timeout: 2000 }
+          undefined,
+          { timeout: 1000 }
         );
         console.error("检测到来源链接");
       } catch {
@@ -1572,7 +1573,7 @@ export class AISearcher {
       // 等待 AI 回答加载
       await this.page.waitForTimeout(1000);
       await this.waitForAiContent(this.page);
-      await this.waitForStreamingComplete(this.page, 16);
+      await this.waitForStreamingComplete(this.page, 10);
 
       // 检查验证码
       const content = (await this.page.evaluate(

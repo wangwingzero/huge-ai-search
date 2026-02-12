@@ -166,8 +166,8 @@ const GLOBAL_SLOT_RETRY_MAX_MS = 800;
 const REQUEST_TOTAL_BUDGET_MS = 55000;
 const REQUEST_BUDGET_SAFETY_MS = 3000;
 const REQUEST_MIN_EXECUTION_MS = 8000;
-const SEARCH_EXECUTION_TIMEOUT_MS = 42000;
-const SEARCHER_NAV_TIMEOUT_SECONDS = 45;
+const SEARCH_EXECUTION_TIMEOUT_MS = 50000;
+const SEARCHER_NAV_TIMEOUT_SECONDS = 30;
 const MAX_SESSIONS = 5; // 最大会话数
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟超时
 const SESSION_MAX_SEARCHES = 50; // 单会话最大搜索次数（超过后重建）
@@ -667,7 +667,7 @@ server.tool(
                 `### 🔧 解决方案\n\n` +
                 `请帮助用户在终端执行以下命令完成登录：\n\n` +
                 `\`\`\`bash\n` +
-                `npx -p huge-ai-search huge-ai-search-setup\n` +
+                `npx -y -p huge-ai-search@latest huge-ai-search-setup\n` +
                 `\`\`\`\n\n` +
                 `执行后会弹出浏览器窗口，用户需要：\n` +
                 `1. 完成 Google 登录或验证码验证\n` +
@@ -697,7 +697,7 @@ server.tool(
             `这个错误通常是因为需要登录 Google 账户或完成验证码验证。\n\n` +
             `**请帮助用户在终端执行以下命令：**\n\n` +
             `\`\`\`bash\n` +
-            `npx -p huge-ai-search huge-ai-search-setup\n` +
+            `npx -y -p huge-ai-search@latest huge-ai-search-setup\n` +
             `\`\`\`\n\n` +
             `执行后会弹出浏览器窗口，用户需要：\n` +
             `1. 完成 Google 登录或验证码验证\n` +
@@ -708,7 +708,7 @@ server.tool(
             `### 🔧 可能的解决方案\n\n` +
             `- 检查网络连接是否正常\n` +
             `- 稍后重试\n` +
-            `- 如果问题持续，请帮助用户在终端运行 \`npx -p huge-ai-search huge-ai-search-setup\` 重新登录`;
+            `- 如果问题持续，请帮助用户在终端运行 \`npx -y -p huge-ai-search@latest huge-ai-search-setup\` 重新登录`;
         }
         
         return {
