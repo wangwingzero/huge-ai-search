@@ -63,7 +63,7 @@ jobs:
     if: |
       github.event_name == 'release' ||
       startsWith(github.ref, 'refs/tags/huge-ai-chat-v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,14 +106,22 @@ jobs:
         run: npx ovsx publish "$VSIX_PATH" -p "$OVSX_PAT"
 
       - name: Validate VS Marketplace secret (optional)
-        if: ${{ secrets.VSCE_PAT != '' }}
         working-directory: extensions/huge-ai-chat
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: node scripts/check-release-readiness.js --require-vsce
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            node scripts/check-release-readiness.js --require-vsce
+          else
+            echo "VSCE_PAT not configured, skip VS Marketplace validation."
+          fi
 
       - name: Publish to Visual Studio Marketplace (optional)
-        if: ${{ secrets.VSCE_PAT != '' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx @vscode/vsce publish --packagePath "$VSIX_PATH" --pat "$VSCE_PAT"
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            npx @vscode/vsce publish --packagePath "$VSIX_PATH" --pat "$VSCE_PAT"
+          else
+            echo "VSCE_PAT not configured, skip VS Marketplace publish."
+          fi
