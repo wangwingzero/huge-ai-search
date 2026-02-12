@@ -1,0 +1,164 @@
+name: ci-auto-fix
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-auto-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-auto-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      AUTO_FIX_COMMAND: npm run build
+      AUTO_FIX_MAX_ATTEMPTS: 3
+      AUTO_FIX_MAX_FILES: 8
+      AUTO_FIX_MAX_CHANGED_LINES: 300
+      AUTO_FIX_ALLOWED_REGEX: "^(src/|extensions/huge-ai-chat/src/|package\\.json|package-lock\\.json|tsconfig\\.json|extensions/huge-ai-chat/package\\.json|extensions/huge-ai-chat/package-lock\\.json|extensions/huge-ai-chat/tsconfig\\.json)$"
+      CODEX_MODEL: gpt-5-codex
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run validation
+        id: validation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          $AUTO_FIX_COMMAND 2>&1 | tee build_log.txt
+
+      - name: Try Codex auto-fix
+        id: autofix
+        if: steps.validation.outcome == 'failure'
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_ENDPOINT: ${{ secrets.CODEX_API_ENDPOINT }}
+        run: |
+          if [ -z "${CODEX_API_KEY}${OPENAI_API_KEY}" ]; then
+            echo "Missing API key. Set CODEX_API_KEY or OPENAI_API_KEY."
+            exit 1
+          fi
+
+          fixed=false
+          for attempt in $(seq 1 "$AUTO_FIX_MAX_ATTEMPTS"); do
+            echo "Auto-fix attempt ${attempt}/${AUTO_FIX_MAX_ATTEMPTS}"
+            if ! python .github/scripts/auto_fix.py \
+              --log-file build_log.txt \
+              --output-file codex.patch \
+              --attempt "$attempt" \
+              --max-attempts "$AUTO_FIX_MAX_ATTEMPTS"; then
+              echo "Auto-fix script failed on attempt ${attempt}."
+              break
+            fi
+
+            if [ ! -s codex.patch ]; then
+              echo "No patch generated."
+              break
+            fi
+
+            can_apply_direct=true
+            if ! git apply --check codex.patch; then
+              can_apply_direct=false
+            fi
+            if [ "$can_apply_direct" != "true" ] && ! git apply --3way --check codex.patch; then
+              echo "Patch cannot be applied cleanly."
+              sed -n '1,200p' codex.patch
+              break
+            fi
+
+            if [ "$can_apply_direct" = "true" ]; then
+              git apply --whitespace=fix codex.patch
+            else
+              git apply --3way --whitespace=fix codex.patch
+            fi
+
+            changed_files=$(git diff --name-only | wc -l | tr -d ' ')
+            changed_lines=$(git diff --numstat | awk '{sum += $1 + $2} END {print sum + 0}')
+            disallowed_files=$(git diff --name-only | grep -Ev "$AUTO_FIX_ALLOWED_REGEX" || true)
+
+            if [ "$changed_files" -gt "$AUTO_FIX_MAX_FILES" ]; then
+              echo "Patch exceeds changed file budget: $changed_files > $AUTO_FIX_MAX_FILES"
+              break
+            fi
+            if [ "$changed_lines" -gt "$AUTO_FIX_MAX_CHANGED_LINES" ]; then
+              echo "Patch exceeds changed line budget: $changed_lines > $AUTO_FIX_MAX_CHANGED_LINES"
+              break
+            fi
+            if [ -n "$disallowed_files" ]; then
+              echo "Patch modified disallowed files:"
+              echo "$disallowed_files"
+              break
+            fi
+
+            if $AUTO_FIX_COMMAND 2>&1 | tee build_log.txt; then
+              fixed=true
+              break
+            fi
+          done
+
+          echo "fixed=$fixed" >> "$GITHUB_OUTPUT"
+          if [ "$fixed" != "true" ]; then
+            exit 1
+          fi
+
+      - name: Fail if initial validation failed and auto-fix did not run
+        if: steps.validation.outcome == 'failure' && steps.autofix.conclusion == 'skipped'
+        run: exit 1
+
+      - name: Check changes
+        id: changes
+        if: steps.autofix.outputs.fixed == 'true'
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request for fixes
+        if: steps.changes.outputs.changed == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: codex/auto-fix-${{ github.run_id }}
+          delete-branch: true
+          title: "fix(ci): codex auto-fix build failure"
+          commit-message: "fix(ci): codex auto-fix build failure [skip ci]"
+          body: |
+            This PR was generated automatically after a CI failure.
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            - Validation command: `${{ env.AUTO_FIX_COMMAND }}`
+            Please review all changes before merge.
