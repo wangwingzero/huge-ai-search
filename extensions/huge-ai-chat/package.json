@@ -116,7 +116,7 @@
     "check:publish-secrets": "node scripts/check-release-readiness.js --require-secrets",
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "test": "npm run check:release && npm run compile && node --test \"tests/*.test.js\"",
+    "test": "npm run check:release && npm run compile && node --test",
     "package:vsix": "npm run check:release && npm run compile && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && npx @vscode/vsce package --no-dependencies -o artifacts/huge-ai-chat.vsix",
     "vscode:prepublish": "npm run compile"
   },
