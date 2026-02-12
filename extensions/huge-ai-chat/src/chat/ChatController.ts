@@ -225,7 +225,15 @@ export class ChatController implements vscode.Disposable {
       }
       case "thread/clearAll":
         await this.store.clearHistory();
+        this.pendingThreads.clear();
+        this.lastQueryByThread.clear();
         this.postStateUpdated();
+        this.postStatus(
+          "success",
+          "历史已清空",
+          "所有线程和会话记录已移除。",
+          "点击新聊天开始新的提问。"
+        );
         return;
       case "thread/switch":
         await this.store.switchThread(payload.threadId);

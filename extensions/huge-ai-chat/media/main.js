@@ -1139,26 +1139,15 @@
     });
 
     dom.clearHistoryBtn.addEventListener("click", () => {
-      const ok = window.confirm("确定清空所有聊天线程吗？");
-      if (!ok) {
-        return;
-      }
       post({ type: "thread/clearAll" });
-      runtime.authMessage = "";
-      runtime.canRetry = false;
-      runtime.threadStatus = {};
-      runtime.globalStatus = {
-        kind: "idle",
-        title: "历史已清空",
-        detail: "所有线程和会话记录已移除。",
-        suggestion: "点击 New Chat 开始新的提问。",
+      setStatus({
+        kind: "progress",
+        title: "正在清空历史",
+        detail: "已请求扩展清空所有聊天线程。",
+        suggestion: "完成后会自动刷新为空会话。",
         at: Date.now(),
-      };
-      runtime.historyKeyword = "";
-      dom.historySearchInput.value = "";
+      });
       setHistoryOpen(false);
-      renderAuthBanner();
-      renderStatusBar();
     });
 
     dom.runSetupBtn.addEventListener("click", () => {
