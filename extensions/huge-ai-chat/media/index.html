@@ -11,32 +11,55 @@
   <div class="app">
     <header class="topbar">
       <div class="left-actions">
-        <button id="newThreadBtn" class="btn">New Chat</button>
-        <label class="lang-wrap">
-          <span>Language</span>
-          <select id="languageSelect">
-            <option value="zh-CN">zh-CN</option>
-            <option value="en-US">en-US</option>
-            <option value="ja-JP">ja-JP</option>
-            <option value="ko-KR">ko-KR</option>
-            <option value="de-DE">de-DE</option>
-            <option value="fr-FR">fr-FR</option>
-          </select>
-        </label>
+        <button
+          id="newThreadBtn"
+          class="btn icon-btn"
+          aria-label="新聊天"
+          title="新聊天"
+          data-tooltip="新聊天"
+        >✎</button>
       </div>
       <div class="right-actions">
-        <button id="copyThreadBtn" class="btn">Copy Thread</button>
-        <button id="clearHistoryBtn" class="btn danger">Clear History</button>
+        <button
+          id="historyBtn"
+          class="btn icon-btn"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-label="历史记录"
+          title="历史记录"
+          data-tooltip="历史记录"
+        >↺</button>
+        <button
+          id="copyThreadBtn"
+          class="btn icon-btn"
+          aria-label="复制会话"
+          title="复制会话"
+          data-tooltip="复制会话"
+        >⧉</button>
+        <button
+          id="clearHistoryBtn"
+          class="btn icon-btn danger"
+          aria-label="清空历史"
+          title="清空历史"
+          data-tooltip="清空历史"
+        >⌫</button>
       </div>
     </header>
 
     <main class="content">
-      <aside class="sidebar">
-        <div class="sidebar-title">Threads</div>
-        <ul id="threadList" class="thread-list"></ul>
-      </aside>
-
       <section class="chat">
+        <div id="historyBackdrop" class="history-backdrop hidden"></div>
+        <div id="historyPanel" class="history-panel hidden" role="dialog" aria-label="History">
+          <div class="history-head">
+            <div class="history-title">History</div>
+            <button id="historyCloseBtn" class="history-close" type="button" aria-label="Close history">×</button>
+          </div>
+          <div class="history-search-wrap">
+            <input id="historySearchInput" type="text" placeholder="搜索历史记录..." />
+          </div>
+          <ul id="threadList" class="thread-list history-list"></ul>
+        </div>
+
         <div id="authBanner" class="auth-banner hidden">
           <span id="authText"></span>
           <div class="auth-actions">

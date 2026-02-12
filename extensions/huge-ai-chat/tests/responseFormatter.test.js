@@ -45,3 +45,19 @@ test("isAuthRelatedError should detect captcha keyword", () => {
   assert.equal(isAuthRelatedError("CAPTCHA 验证超时"), true);
   assert.equal(isAuthRelatedError("普通错误"), false);
 });
+
+test("parseSearchToolText should fallback extract plain urls as sources", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "你可以参考这两篇资料：",
+    "https://example.com/a",
+    "https://news.ycombinator.com/item?id=1",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.equal(parsed.sources.length, 2);
+  assert.match(parsed.renderedMarkdown, /### 来源/);
+  assert.match(parsed.renderedMarkdown, /\[example\.com\]\(https:\/\/example\.com\/a\)/);
+});

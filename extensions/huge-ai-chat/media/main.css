@@ -77,6 +77,10 @@ select {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+.btn.active {
+  border-color: var(--vscode-focusBorder);
+}
+
 .btn.primary {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
@@ -97,24 +101,10 @@ select {
   min-height: 0;
 }
 
-.sidebar {
-  width: 240px;
-  border-right: 1px solid var(--vscode-panel-border);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.sidebar-title {
-  padding: 10px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--vscode-panel-border);
-}
-
 .thread-list {
   list-style: none;
   margin: 0;
-  padding: 8px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -143,7 +133,8 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .thread-content {
@@ -181,10 +172,12 @@ select {
 
 .chat {
   flex: 1;
+  width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
 
 .auth-banner {
@@ -217,6 +210,85 @@ select {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.history-backdrop {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  z-index: 20;
+}
+
+.history-backdrop.hidden {
+  display: none;
+}
+
+.history-panel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: min(460px, calc(100% - 20px));
+  max-height: min(70vh, 720px);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.history-panel.hidden {
+  display: none;
+}
+
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.history-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.history-close {
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.history-close:hover {
+  opacity: 1;
+}
+
+.history-search-wrap {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.history-search-wrap input {
+  width: 100%;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-input-border);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  padding: 0 10px;
+}
+
+.history-list {
+  padding: 8px;
+  max-height: 56vh;
 }
 
 .empty {
@@ -327,6 +399,16 @@ select {
 
 .message a {
   color: var(--vscode-textLink-foreground);
+}
+
+.message a.source-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.message a.source-link:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
 .code-block {

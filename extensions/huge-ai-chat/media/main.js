@@ -53,6 +53,8 @@
     authRunning: false,
     authMessage: "",
     canRetry: false,
+    historyOpen: false,
+    historyKeyword: "",
     globalStatus: {
       kind: "idle",
       title: "系统就绪",
@@ -65,6 +67,11 @@
 
   const dom = {
     newThreadBtn: document.getElementById("newThreadBtn"),
+    historyBtn: document.getElementById("historyBtn"),
+    historyPanel: document.getElementById("historyPanel"),
+    historyBackdrop: document.getElementById("historyBackdrop"),
+    historyCloseBtn: document.getElementById("historyCloseBtn"),
+    historySearchInput: document.getElementById("historySearchInput"),
     copyThreadBtn: document.getElementById("copyThreadBtn"),
     clearHistoryBtn: document.getElementById("clearHistoryBtn"),
     runSetupBtn: document.getElementById("runSetupBtn"),
@@ -593,7 +600,7 @@
         if (!safeUrl) {
           return label;
         }
-        return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        return `<a class="source-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(safeUrl)}">${label}</a>`;
       }
     );
 
@@ -634,18 +641,62 @@
     return text;
   }
 
+  function getThreadSearchText(thread) {
+    if (!thread) {
+      return "";
+    }
+    const title = thread.title || "";
+    const messages = Array.isArray(thread.messages)
+      ? thread.messages
+          .map((message) => (message && typeof message.content === "string" ? message.content : ""))
+          .join("\n")
+      : "";
+    return `${title}\n${messages}`.toLowerCase();
+  }
+
+  function setHistoryOpen(open) {
+    runtime.historyOpen = Boolean(open);
+    dom.historyPanel.classList.toggle("hidden", !runtime.historyOpen);
+    dom.historyBackdrop.classList.toggle("hidden", !runtime.historyOpen);
+    dom.historyBtn.classList.toggle("active", runtime.historyOpen);
+    dom.historyBtn.setAttribute("aria-expanded", runtime.historyOpen ? "true" : "false");
+
+    if (runtime.historyOpen) {
+      renderThreads();
+      setTimeout(() => {
+        dom.historySearchInput.focus();
+      }, 0);
+    }
+  }
+
+  function toggleHistoryOpen() {
+    setHistoryOpen(!runtime.historyOpen);
+  }
+
   function renderThreads() {
     dom.threadList.innerHTML = "";
 
-    if (!state.threads.length) {
+    const keyword = runtime.historyKeyword.trim().toLowerCase();
+    const filteredThreads = keyword
+      ? state.threads.filter((thread) => getThreadSearchText(thread).includes(keyword))
+      : state.threads;
+
+    dom.historyBtn.disabled = state.threads.length === 0;
+    if (state.threads.length === 0) {
+      dom.historyBtn.textContent = "History";
+    } else {
+      dom.historyBtn.textContent = `History (${state.threads.length})`;
+    }
+
+    if (!filteredThreads.length) {
       const li = document.createElement("li");
       li.className = "thread-item";
-      li.textContent = "暂无会话";
+      li.textContent = keyword ? "未找到匹配记录" : "暂无历史记录";
       dom.threadList.appendChild(li);
       return;
     }
 
-    for (const thread of state.threads) {
+    for (const thread of filteredThreads) {
       const li = document.createElement("li");
       li.className = `thread-item ${thread.id === state.activeThreadId ? "active" : ""}`;
       li.dataset.threadId = thread.id;
@@ -685,6 +736,7 @@
           type: "thread/switch",
           threadId: thread.id,
         });
+        setHistoryOpen(false);
       });
 
       dom.threadList.appendChild(li);
@@ -816,6 +868,28 @@
       return;
     }
 
+    const link = target.closest("a[href]");
+    if (link instanceof HTMLAnchorElement) {
+      const href = sanitizeHttpUrl(link.href);
+      if (!href) {
+        return;
+      }
+      event.preventDefault();
+      post({
+        type: "link/open",
+        href,
+      });
+      setStatus({
+        kind: "progress",
+        title: "正在打开来源链接",
+        detail: href,
+        suggestion: "若浏览器未弹出，可稍后重试或手动复制链接。",
+        threadId: state.activeThreadId || undefined,
+        at: Date.now(),
+      });
+      return;
+    }
+
     const copyCodeBtn = target.closest(".copy-code-btn");
     if (copyCodeBtn instanceof HTMLButtonElement) {
       const codeBlock = copyCodeBtn.closest(".code-block");
@@ -896,6 +970,7 @@
       text,
       language: dom.languageSelect.value,
     });
+    setHistoryOpen(false);
     setStatus({
       kind: "progress",
       title: "消息已发送",
@@ -977,6 +1052,30 @@
   }
 
   function wireEvents() {
+    dom.historyBtn.addEventListener("click", () => {
+      toggleHistoryOpen();
+    });
+
+    dom.historyCloseBtn.addEventListener("click", () => {
+      setHistoryOpen(false);
+    });
+
+    dom.historyBackdrop.addEventListener("click", () => {
+      setHistoryOpen(false);
+    });
+
+    dom.historySearchInput.addEventListener("input", () => {
+      runtime.historyKeyword = dom.historySearchInput.value || "";
+      renderThreads();
+    });
+
+    dom.historySearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setHistoryOpen(false);
+      }
+    });
+
     if (dom.copyThreadBtn) {
       dom.copyThreadBtn.dataset.label = "Copy Thread";
       dom.copyThreadBtn.addEventListener("click", async () => {
@@ -1011,6 +1110,9 @@
         type: "thread/create",
         language: dom.languageSelect.value,
       });
+      runtime.historyKeyword = "";
+      dom.historySearchInput.value = "";
+      setHistoryOpen(false);
     });
 
     dom.clearHistoryBtn.addEventListener("click", () => {
@@ -1029,6 +1131,9 @@
         suggestion: "点击 New Chat 开始新的提问。",
         at: Date.now(),
       };
+      runtime.historyKeyword = "";
+      dom.historySearchInput.value = "";
+      setHistoryOpen(false);
       renderAuthBanner();
       renderStatusBar();
     });
@@ -1064,6 +1169,13 @@
 
     dom.messages.addEventListener("click", (event) => {
       void handleMessagesClick(event);
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !runtime.historyOpen) {
+        return;
+      }
+      setHistoryOpen(false);
     });
   }
 

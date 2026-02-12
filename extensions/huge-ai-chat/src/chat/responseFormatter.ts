@@ -55,6 +55,91 @@ function extractSources(raw: string): SearchSource[] {
   return sources;
 }
 
+function sanitizeHttpUrl(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function shouldSkipHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host.includes("google.") ||
+    host.includes("gstatic.com") ||
+    host.includes("googleapis.com") ||
+    host === "localhost" ||
+    host === "127.0.0.1"
+  );
+}
+
+function cleanTrailingPunctuation(url: string): string {
+  return url.replace(/[)\]}>，。！？；：,.;!?]+$/g, "");
+}
+
+function guessTitleFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./i, "");
+  } catch {
+    return url;
+  }
+}
+
+function extractFallbackSources(raw: string): SearchSource[] {
+  const matches = raw.match(/https?:\/\/[^\s<>"')\]]+/g) || [];
+  const seen = new Set<string>();
+  const sources: SearchSource[] = [];
+
+  for (const item of matches) {
+    const normalized = sanitizeHttpUrl(cleanTrailingPunctuation(item));
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+
+    try {
+      const host = new URL(normalized).hostname;
+      if (shouldSkipHost(host)) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    sources.push({
+      title: guessTitleFromUrl(normalized),
+      url: normalized,
+    });
+  }
+
+  return sources;
+}
+
+function mergeSources(primary: SearchSource[], fallback: SearchSource[]): SearchSource[] {
+  const merged: SearchSource[] = [];
+  const seen = new Set<string>();
+
+  for (const source of [...primary, ...fallback]) {
+    const normalized = sanitizeHttpUrl(source.url);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    merged.push({
+      title: (source.title || "").trim() || guessTitleFromUrl(normalized),
+      url: normalized,
+    });
+  }
+
+  return merged.slice(0, 10);
+}
+
 function extractDebugSection(raw: string): string | undefined {
   const divider = "\n---\n";
   const index = raw.indexOf(divider);
@@ -109,7 +194,7 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
   }
 
   const answer = extractAnswer(raw);
-  const sources = extractSources(raw);
+  const sources = mergeSources(extractSources(raw), extractFallbackSources(raw));
   const debugText = extractDebugSection(raw);
   const sessionId = extractSessionId(raw);
 

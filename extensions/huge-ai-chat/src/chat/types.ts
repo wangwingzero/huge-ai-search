@@ -68,6 +68,7 @@ export type PanelToHostMessage =
   | { type: "thread/delete"; threadId: string }
   | { type: "chat/send"; threadId: string; text: string; language?: SearchLanguage }
   | { type: "chat/retryLast"; threadId: string }
+  | { type: "link/open"; href: string }
   | { type: "auth/runSetup" };
 
 export type HostToPanelMessage =

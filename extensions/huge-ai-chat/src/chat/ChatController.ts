@@ -62,6 +62,7 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
     threadId?: unknown;
     text?: unknown;
     language?: unknown;
+    href?: unknown;
   };
 
   if (typeof candidate.type !== "string") {
@@ -79,6 +80,8 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
     case "thread/delete":
     case "chat/retryLast":
       return typeof candidate.threadId === "string";
+    case "link/open":
+      return typeof candidate.href === "string";
     case "chat/send":
       return (
         typeof candidate.threadId === "string" &&
@@ -235,6 +238,9 @@ export class ChatController implements vscode.Disposable {
         return;
       case "chat/retryLast":
         await this.retryLast(payload.threadId);
+        return;
+      case "link/open":
+        await this.openExternalLink(payload.href);
         return;
       case "auth/runSetup":
         await this.runSetupFlow();
@@ -459,6 +465,34 @@ export class ChatController implements vscode.Disposable {
       success: result.success,
       message: result.message,
     };
+  }
+
+  private async openExternalLink(rawHref: string): Promise<void> {
+    const href = rawHref.trim();
+    let uri: vscode.Uri;
+    try {
+      uri = vscode.Uri.parse(href);
+    } catch {
+      this.postStatus("warning", "链接无效", "无法解析该来源链接。", "请检查链接格式后重试。");
+      return;
+    }
+
+    if (uri.scheme !== "http" && uri.scheme !== "https") {
+      this.postStatus("warning", "链接被拦截", "仅允许打开 http/https 来源链接。", "请使用网页链接。");
+      return;
+    }
+
+    try {
+      const opened = await vscode.env.openExternal(uri);
+      if (opened) {
+        this.postStatus("success", "已打开来源链接", uri.toString(), "可在浏览器核实答案来源。");
+        return;
+      }
+      this.postStatus("warning", "链接未打开", "系统未能处理该链接。", "请复制链接后在浏览器手动打开。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.postStatus("error", "打开链接失败", message, "请稍后重试，或复制链接到浏览器。");
+    }
   }
 
   private ensureMcpWarmup(): void {
