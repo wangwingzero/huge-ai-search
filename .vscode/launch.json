@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Huge AI Chat Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/huge-ai-chat"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/extensions/huge-ai-chat/dist/**/*.js"
+      ],
+      "preLaunchTask": "huge-ai-chat: compile"
+    }
+  ]
+}

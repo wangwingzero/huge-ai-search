@@ -7,6 +7,8 @@ export interface SetupRunResult {
   exitCode: number | null;
 }
 
+export type SetupRunMode = "setup" | "browser";
+
 interface CommandSpec {
   command: string;
   args: string[];
@@ -65,6 +67,34 @@ function getSetupCommand(): CommandSpec {
   };
 }
 
+function getStartMessage(mode: SetupRunMode): string {
+  if (mode === "browser") {
+    return "开始启动浏览器查看流程...";
+  }
+  return "开始执行登录验证流程...";
+}
+
+function getSuccessMessage(mode: SetupRunMode): string {
+  if (mode === "browser") {
+    return "浏览器会话已结束，认证状态已保存。";
+  }
+  return "验证流程已完成。请点击“重试”继续搜索。";
+}
+
+function getLaunchErrorMessage(mode: SetupRunMode, reason: string): string {
+  if (mode === "browser") {
+    return `浏览器查看流程启动失败: ${reason}`;
+  }
+  return `登录验证流程启动失败: ${reason}`;
+}
+
+function getExitErrorMessage(mode: SetupRunMode, exitCode: number | null): string {
+  if (mode === "browser") {
+    return `浏览器查看流程失败，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
+  }
+  return `验证流程失败，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
+}
+
 export class SetupRunner {
   private running: Promise<SetupRunResult> | null = null;
 
@@ -74,25 +104,26 @@ export class SetupRunner {
     return this.running !== null;
   }
 
-  async ensureRunning(): Promise<SetupRunResult> {
+  async ensureRunning(mode: SetupRunMode = "setup"): Promise<SetupRunResult> {
     if (this.running) {
+      this.output.appendLine(`[Setup] 已有流程运行中，复用当前任务（requested=${mode}）`);
       return this.running;
     }
 
-    this.running = this.runInternal().finally(() => {
+    this.running = this.runInternal(mode).finally(() => {
       this.running = null;
     });
 
     return this.running;
   }
 
-  private runInternal(): Promise<SetupRunResult> {
+  private runInternal(mode: SetupRunMode): Promise<SetupRunResult> {
     return new Promise<SetupRunResult>((resolve) => {
       const spec = getSetupCommand();
       const launchContext = resolveSetupLaunchContext();
       const cwd = launchContext.cwd;
       this.output.show(true);
-      this.output.appendLine("[Setup] 开始执行登录验证流程...");
+      this.output.appendLine(`[Setup] ${getStartMessage(mode)}`);
       this.output.appendLine(`[Setup] Command: ${spec.command} ${spec.args.join(" ")}`);
       if (launchContext.fallbackReason) {
         this.output.appendLine(`[Setup] 路径兼容回退: ${launchContext.fallbackReason}`);
@@ -114,7 +145,7 @@ export class SetupRunner {
       });
 
       child.on("error", (error) => {
-        const message = `登录验证流程启动失败: ${error.message}`;
+        const message = getLaunchErrorMessage(mode, error.message);
         this.output.appendLine(`[Setup] ${message}`);
         resolve({
           success: false,
@@ -125,7 +156,7 @@ export class SetupRunner {
 
       child.on("close", (exitCode) => {
         if (exitCode === 0) {
-          const message = "验证流程已完成。请点击“重试”继续搜索。";
+          const message = getSuccessMessage(mode);
           this.output.appendLine(`[Setup] ${message}`);
           resolve({
             success: true,
@@ -135,7 +166,7 @@ export class SetupRunner {
           return;
         }
 
-        const message = `验证流程失败，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
+        const message = getExitErrorMessage(mode, exitCode);
         this.output.appendLine(`[Setup] ${message}`);
         resolve({
           success: false,

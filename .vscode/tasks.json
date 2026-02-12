@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "huge-ai-chat: compile",
+      "type": "shell",
+      "command": "npm run compile",
+      "options": {
+        "cwd": "${workspaceFolder}/extensions/huge-ai-chat"
+      },
+      "group": "build",
+      "problemMatcher": "$tsc"
+    }
+  ]
+}

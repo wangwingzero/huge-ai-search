@@ -67,6 +67,7 @@
 
   const dom = {
     newThreadBtn: document.getElementById("newThreadBtn"),
+    openBrowserBtn: document.getElementById("openBrowserBtn"),
     historyBtn: document.getElementById("historyBtn"),
     historyPanel: document.getElementById("historyPanel"),
     historyBackdrop: document.getElementById("historyBackdrop"),
@@ -76,7 +77,6 @@
     clearHistoryBtn: document.getElementById("clearHistoryBtn"),
     runSetupBtn: document.getElementById("runSetupBtn"),
     retryBtn: document.getElementById("retryBtn"),
-    languageSelect: document.getElementById("languageSelect"),
     threadList: document.getElementById("threadList"),
     messages: document.getElementById("messages"),
     input: document.getElementById("input"),
@@ -299,14 +299,26 @@
     if (!button) {
       return;
     }
-    const origin = button.dataset.label || button.textContent || "";
+    const isIconButton = button.classList.contains("icon-btn");
+    const origin = button.dataset.label || button.dataset.tooltip || button.title || button.textContent || "";
     if (!button.dataset.label) {
       button.dataset.label = origin;
     }
-    button.textContent = nextLabel;
+    if (isIconButton) {
+      button.dataset.tooltip = nextLabel;
+      button.title = nextLabel;
+    } else {
+      button.textContent = nextLabel;
+    }
     button.disabled = true;
     setTimeout(() => {
-      button.textContent = button.dataset.label || origin;
+      if (isIconButton) {
+        const label = button.dataset.label || origin;
+        button.dataset.tooltip = label;
+        button.title = label;
+      } else {
+        button.textContent = button.dataset.label || origin;
+      }
       button.disabled = false;
     }, duration);
   }
@@ -682,11 +694,11 @@
       : state.threads;
 
     dom.historyBtn.disabled = state.threads.length === 0;
-    if (state.threads.length === 0) {
-      dom.historyBtn.textContent = "History";
-    } else {
-      dom.historyBtn.textContent = `History (${state.threads.length})`;
-    }
+    const totalThreads = state.threads.length;
+    const historyTooltip = totalThreads > 0 ? `历史记录（${totalThreads}）` : "历史记录";
+    dom.historyBtn.dataset.tooltip = historyTooltip;
+    dom.historyBtn.title = historyTooltip;
+    dom.historyBtn.dataset.count = totalThreads > 0 ? String(totalThreads) : "";
 
     if (!filteredThreads.length) {
       const li = document.createElement("li");
@@ -755,8 +767,6 @@
       renderComposerState();
       return;
     }
-
-    dom.languageSelect.value = thread.language;
 
     if (!thread.messages.length) {
       const empty = document.createElement("div");
@@ -968,7 +978,7 @@
       type: "chat/send",
       threadId: thread.id,
       text,
-      language: dom.languageSelect.value,
+      language: "zh-CN",
     });
     setHistoryOpen(false);
     setStatus({
@@ -1052,6 +1062,19 @@
   }
 
   function wireEvents() {
+    if (dom.openBrowserBtn) {
+      dom.openBrowserBtn.addEventListener("click", () => {
+        post({ type: "browser/open" });
+        setStatus({
+          kind: "progress",
+          title: "正在打开浏览器",
+          detail: "将启动与验证码流程相同的 Playwright 浏览器窗口。",
+          suggestion: "你可以在浏览器中直接对话，登录状态会自动持久化。",
+          at: Date.now(),
+        });
+      });
+    }
+
     dom.historyBtn.addEventListener("click", () => {
       toggleHistoryOpen();
     });
@@ -1077,7 +1100,7 @@
     });
 
     if (dom.copyThreadBtn) {
-      dom.copyThreadBtn.dataset.label = "Copy Thread";
+      dom.copyThreadBtn.dataset.label = "复制会话";
       dom.copyThreadBtn.addEventListener("click", async () => {
         const thread = getActiveThread();
         if (!thread || !thread.messages.length) {
@@ -1108,7 +1131,7 @@
     dom.newThreadBtn.addEventListener("click", () => {
       post({
         type: "thread/create",
-        language: dom.languageSelect.value,
+        language: "zh-CN",
       });
       runtime.historyKeyword = "";
       dom.historySearchInput.value = "";

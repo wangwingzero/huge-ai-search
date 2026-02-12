@@ -13,6 +13,7 @@ import {
 } from "./types";
 
 const SEARCH_REQUEST_TIMEOUT_MS = 120_000;
+const FIXED_CHAT_LANGUAGE: SearchLanguage = "zh-CN";
 
 function getNonce(): string {
   return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
@@ -71,6 +72,7 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
 
   switch (candidate.type) {
     case "panel/ready":
+    case "browser/open":
     case "thread/clearAll":
     case "auth/runSetup":
       return true;
@@ -135,7 +137,7 @@ export class ChatController implements vscode.Disposable {
 
   async createThreadFromCommand(): Promise<void> {
     await this.openChatPanel();
-    await this.store.createThread(this.getDefaultLanguage());
+    await this.store.createThread(FIXED_CHAT_LANGUAGE);
     this.postStateUpdated();
   }
 
@@ -213,11 +215,11 @@ export class ChatController implements vscode.Disposable {
         this.postStateFull();
         this.ensureMcpWarmup();
         return;
+      case "browser/open":
+        this.openBrowserView();
+        return;
       case "thread/create": {
-        const language = isSearchLanguage(payload.language)
-          ? payload.language
-          : this.getDefaultLanguage();
-        await this.store.createThread(language);
+        await this.store.createThread(FIXED_CHAT_LANGUAGE);
         this.postStateUpdated();
         return;
       }
@@ -234,7 +236,7 @@ export class ChatController implements vscode.Disposable {
         this.postStateUpdated();
         return;
       case "chat/send":
-        await this.sendMessage(payload.threadId, payload.text, payload.language);
+        await this.sendMessage(payload.threadId, payload.text);
         return;
       case "chat/retryLast":
         await this.retryLast(payload.threadId);
@@ -268,8 +270,7 @@ export class ChatController implements vscode.Disposable {
 
   private async sendMessage(
     threadId: string,
-    rawText: string,
-    languageFromPanel?: SearchLanguage
+    rawText: string
   ): Promise<void> {
     const text = rawText.trim();
     if (!text) {
@@ -291,8 +292,8 @@ export class ChatController implements vscode.Disposable {
       return;
     }
 
-    if (isSearchLanguage(languageFromPanel) && languageFromPanel !== thread.language) {
-      await this.store.setThreadLanguage(threadId, languageFromPanel);
+    if (thread.language !== FIXED_CHAT_LANGUAGE) {
+      await this.store.setThreadLanguage(threadId, FIXED_CHAT_LANGUAGE);
     }
 
     this.pendingThreads.add(threadId);
@@ -341,7 +342,7 @@ export class ChatController implements vscode.Disposable {
       const resultText = await withTimeout(
         this.mcpManager.callSearch({
           query: text,
-          language: latestThread.language,
+          language: FIXED_CHAT_LANGUAGE,
           follow_up: Boolean(latestThread.sessionId),
           session_id: latestThread.sessionId,
         }),
@@ -467,6 +468,39 @@ export class ChatController implements vscode.Disposable {
     };
   }
 
+  private openBrowserView(): void {
+    if (this.setupRunner.isRunning()) {
+      this.postStatus(
+        "warning",
+        "浏览器已在运行",
+        "已有一个 Playwright 浏览器窗口正在使用中。",
+        "请先完成当前浏览器中的操作，或关闭后再试。"
+      );
+      return;
+    }
+
+    this.postStatus(
+      "progress",
+      "正在打开浏览器",
+      "将启动与验证码流程相同的 Playwright 浏览器窗口。",
+      "你可以在浏览器中直接对话，登录状态会自动持久化。"
+    );
+
+    void this.setupRunner.ensureRunning("browser").then((result) => {
+      this.postStatus(
+        result.success ? "success" : "warning",
+        result.success ? "浏览器会话已结束" : "浏览器会话异常结束",
+        result.message,
+        result.success
+          ? "登录状态已持久化，可继续在插件中提问。"
+          : "可再次点击“浏览器查看”重试，或执行 Run Setup。"
+      );
+      if (!result.success) {
+        void vscode.window.showWarningMessage(result.message);
+      }
+    });
+  }
+
   private async openExternalLink(rawHref: string): Promise<void> {
     const href = rawHref.trim();
     let uri: vscode.Uri;
@@ -559,16 +593,6 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     void this.panel.webview.postMessage(message);
-  }
-
-  private getDefaultLanguage(): SearchLanguage {
-    const configured = vscode.workspace
-      .getConfiguration("hugeAiChat")
-      .get<string>("defaultLanguage", "zh-CN");
-    if (isSearchLanguage(configured)) {
-      return configured;
-    }
-    return "zh-CN";
   }
 
   private getWebviewHtml(webview: vscode.Webview): string {

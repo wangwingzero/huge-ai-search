@@ -62,6 +62,7 @@ export interface ChatStatusSnapshot {
 
 export type PanelToHostMessage =
   | { type: "panel/ready" }
+  | { type: "browser/open" }
   | { type: "thread/create"; language?: SearchLanguage }
   | { type: "thread/clearAll" }
   | { type: "thread/switch"; threadId: string }

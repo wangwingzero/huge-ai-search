@@ -7,29 +7,12 @@ import { McpClientManager } from "./mcp/McpClientManager";
 
 let controller: ChatController | null = null;
 
-function getDefaultLanguage(): SearchLanguage {
-  const configured = vscode.workspace
-    .getConfiguration("hugeAiChat")
-    .get<string>("defaultLanguage", "zh-CN");
-  if (
-    configured === "zh-CN" ||
-    configured === "en-US" ||
-    configured === "ja-JP" ||
-    configured === "ko-KR" ||
-    configured === "de-DE" ||
-    configured === "fr-FR"
-  ) {
-    return configured;
-  }
-  return "zh-CN";
-}
-
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Huge AI Chat");
   context.subscriptions.push(output);
 
   const maxThreads = vscode.workspace.getConfiguration("hugeAiChat").get<number>("maxThreads", 50);
-  const defaultLanguage = getDefaultLanguage();
+  const defaultLanguage: SearchLanguage = "zh-CN";
 
   const store = new ThreadStore(context, maxThreads, defaultLanguage);
   const mcpManager = new McpClientManager(context, output);
