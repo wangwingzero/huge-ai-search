@@ -85,7 +85,7 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: write
     steps:
@@ -125,7 +125,7 @@ jobs:
   publish-npm:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
