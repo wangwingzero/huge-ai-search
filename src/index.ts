@@ -695,7 +695,8 @@ server.tool(
     const { query, language, follow_up, session_id, image_path } = args;
     const requestStartMs = Date.now();
     const normalizedQuery = query.trim();
-    const normalizedImagePath = image_path?.trim() || undefined;
+    // 确保 image_path 是字符串类型，否则使用 undefined
+    const normalizedImagePath = typeof image_path === "string" ? image_path.trim() : undefined;
     const requestFollowUp = follow_up && !normalizedImagePath;
     const hasImageInput = Boolean(normalizedImagePath);
     const guardedQuery =

@@ -5173,7 +5173,8 @@ export class AISearcher {
     imagePath?: string
   ): Promise<SearchResult> {
     const normalizedQuery = query.trim();
-    const normalizedImagePath = imagePath?.trim() || undefined;
+    // 确保 imagePath 是字符串类型，否则使用 undefined
+    const normalizedImagePath = typeof imagePath === "string" ? imagePath.trim() : undefined;
     const hasImageInput = Boolean(normalizedImagePath);
     const effectivePrompt = normalizedQuery;
     let absoluteImagePath: string | undefined;
