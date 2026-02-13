@@ -120,34 +120,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-npm:
-    needs: test
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'release' && secrets.NPM_TOKEN != '' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: 'https://registry.npmjs.org'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  # publish-npm job removed - requires NPM_TOKEN to be configured in repository secrets
+  # To enable npm publishing, add NPM_TOKEN to your repository secrets
