@@ -10,6 +10,19 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const HEADED_LAUNCH_ARGS = [
+  "--disable-blink-features=AutomationControlled",
+  "--disable-infobars",
+  "--no-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--start-maximized",
+  "--disable-popup-blocking",
+];
+
 // Edge 路径（与 searcher.ts 保持一致）
 const EDGE_PATHS: Record<string, string[]> = {
   win32: [
@@ -60,16 +73,12 @@ async function setup() {
   const browser = await chromium.launch({
     executablePath: edgePath,
     headless: false,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--no-sandbox",
-    ],
+    args: HEADED_LAUNCH_ARGS,
   });
   
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    viewport: null,
+    userAgent: DEFAULT_USER_AGENT,
   });
   
   const page = await context.newPage();

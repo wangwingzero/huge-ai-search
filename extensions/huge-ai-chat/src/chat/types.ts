@@ -64,10 +64,23 @@ export type PanelToHostMessage =
   | { type: "panel/ready" }
   | { type: "browser/open" }
   | { type: "thread/create"; language?: SearchLanguage }
+  | {
+      type: "thread/exportMarkdown";
+      threadId: string;
+      title: string;
+      markdown: string;
+    }
   | { type: "thread/clearAll" }
   | { type: "thread/switch"; threadId: string }
   | { type: "thread/delete"; threadId: string }
-  | { type: "chat/send"; threadId: string; text: string; language?: SearchLanguage }
+  | {
+      type: "chat/send";
+      threadId: string;
+      text: string;
+      language?: SearchLanguage;
+      imageDataUrl?: string;
+      imageCount?: number;
+    }
   | { type: "chat/retryLast"; threadId: string }
   | { type: "link/open"; href: string }
   | { type: "auth/runSetup" };

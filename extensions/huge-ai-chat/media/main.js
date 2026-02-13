@@ -1,6 +1,10 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const DEFAULT_INPUT_PLACEHOLDER = "输入问题，Enter 发送，Shift+Enter 换行";
+  const MAX_ATTACHMENTS = 12;
+  const MERGED_IMAGE_MAX_WIDTH = 1800;
+  const MERGED_IMAGE_MAX_TOTAL_HEIGHT = 9000;
+  const MERGED_IMAGE_PADDING = 12;
   const DEBUG_BLOCK_START = ":::huge_ai_chat_debug_start:::";
   const DEBUG_BLOCK_END = ":::huge_ai_chat_debug_end:::";
   const KNOWN_CODE_LANGUAGES = new Set([
@@ -51,10 +55,12 @@
 
   const runtime = {
     authRunning: false,
+    preparingImage: false,
     authMessage: "",
     canRetry: false,
     historyOpen: false,
     historyKeyword: "",
+    statusExpanded: false,
     globalStatus: {
       kind: "idle",
       title: "系统就绪",
@@ -63,6 +69,7 @@
       at: Date.now(),
     },
     threadStatus: {},
+    attachments: [],
   };
 
   const dom = {
@@ -74,7 +81,9 @@
     historyCloseBtn: document.getElementById("historyCloseBtn"),
     historySearchInput: document.getElementById("historySearchInput"),
     copyThreadBtn: document.getElementById("copyThreadBtn"),
+    exportThreadBtn: document.getElementById("exportThreadBtn"),
     clearHistoryBtn: document.getElementById("clearHistoryBtn"),
+    statusToggleBtn: document.getElementById("statusToggleBtn"),
     runSetupBtn: document.getElementById("runSetupBtn"),
     retryBtn: document.getElementById("retryBtn"),
     threadList: document.getElementById("threadList"),
@@ -84,10 +93,15 @@
     authBanner: document.getElementById("authBanner"),
     authText: document.getElementById("authText"),
     statusBar: document.getElementById("statusBar"),
+    statusDot: document.getElementById("statusDot"),
     statusTitle: document.getElementById("statusTitle"),
     statusTime: document.getElementById("statusTime"),
     statusDetail: document.getElementById("statusDetail"),
     statusSuggestion: document.getElementById("statusSuggestion"),
+    attachmentBar: document.getElementById("attachmentBar"),
+    attachmentSummary: document.getElementById("attachmentSummary"),
+    attachmentList: document.getElementById("attachmentList"),
+    clearAttachmentsBtn: document.getElementById("clearAttachmentsBtn"),
   };
 
   function post(message) {
@@ -150,6 +164,31 @@
     return runtime.globalStatus;
   }
 
+  function getStatusIndicatorKind(status) {
+    if (!status) {
+      return "success";
+    }
+    if (status.kind === "success" || status.kind === "idle") {
+      return "success";
+    }
+    if (status.kind === "warning" || status.kind === "error") {
+      return "error";
+    }
+    if (status.kind === "progress") {
+      return "progress";
+    }
+    return "idle";
+  }
+
+  function setStatusExpanded(nextValue) {
+    runtime.statusExpanded = Boolean(nextValue);
+    if (dom.statusToggleBtn) {
+      dom.statusToggleBtn.setAttribute("aria-pressed", runtime.statusExpanded ? "true" : "false");
+    }
+    saveDraft();
+    renderStatusBar();
+  }
+
   function formatStatusTime(value) {
     if (!value) {
       return "";
@@ -202,6 +241,185 @@
     }
   }
 
+  function createAttachmentId() {
+    return `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("读取图片失败"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageFromDataUrl(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("加载图片失败"));
+      image.src = dataUrl;
+    });
+  }
+
+  function clearAttachments() {
+    runtime.attachments = [];
+    renderAttachments();
+  }
+
+  function removeAttachment(attachmentId) {
+    runtime.attachments = runtime.attachments.filter((item) => item.id !== attachmentId);
+    renderAttachments();
+  }
+
+  function renderAttachments() {
+    const list = Array.isArray(runtime.attachments) ? runtime.attachments : [];
+    const hasAny = list.length > 0;
+    dom.attachmentBar.classList.toggle("hidden", !hasAny);
+
+    if (!hasAny) {
+      dom.attachmentSummary.textContent = "";
+      dom.attachmentList.innerHTML = "";
+      renderComposerState();
+      return;
+    }
+
+    dom.attachmentSummary.textContent =
+      list.length > 1
+        ? `已粘贴 ${list.length} 张截图（发送时会自动合并）`
+        : "已粘贴 1 张截图";
+    dom.attachmentList.innerHTML = "";
+
+    for (const attachment of list) {
+      const item = document.createElement("div");
+      item.className = "attachment-item";
+      item.dataset.attachmentId = attachment.id;
+
+      const image = document.createElement("img");
+      image.src = attachment.dataUrl;
+      image.alt = "attachment";
+      item.appendChild(image);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "attachment-remove";
+      removeBtn.textContent = "×";
+      removeBtn.title = "移除图片";
+      removeBtn.dataset.attachmentId = attachment.id;
+      item.appendChild(removeBtn);
+
+      dom.attachmentList.appendChild(item);
+    }
+
+    renderComposerState();
+  }
+
+  async function addAttachmentsFromFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && String(file.type || "").startsWith("image/"));
+    if (!files.length) {
+      return 0;
+    }
+
+    const remain = MAX_ATTACHMENTS - runtime.attachments.length;
+    if (remain <= 0) {
+      setStatus({
+        kind: "warning",
+        title: "图片数量已达上限",
+        detail: `最多可粘贴 ${MAX_ATTACHMENTS} 张图片。`,
+        suggestion: "请先移除部分截图后再粘贴。",
+        threadId: state.activeThreadId || undefined,
+        at: Date.now(),
+      });
+      return 0;
+    }
+
+    const acceptedFiles = files.slice(0, remain);
+    let added = 0;
+    for (const file of acceptedFiles) {
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const image = await loadImageFromDataUrl(dataUrl);
+        runtime.attachments.push({
+          id: createAttachmentId(),
+          dataUrl,
+          width: image.naturalWidth || 0,
+          height: image.naturalHeight || 0,
+          name: file.name || "pasted-image.png",
+        });
+        added += 1;
+      } catch {
+        continue;
+      }
+    }
+
+    renderAttachments();
+    return added;
+  }
+
+  async function buildMergedAttachmentDataUrl() {
+    const attachments = Array.isArray(runtime.attachments) ? runtime.attachments : [];
+    if (!attachments.length) {
+      return undefined;
+    }
+    if (attachments.length === 1) {
+      return attachments[0].dataUrl;
+    }
+
+    const decodedImages = [];
+    for (const attachment of attachments) {
+      const image = await loadImageFromDataUrl(attachment.dataUrl);
+      decodedImages.push(image);
+    }
+    if (!decodedImages.length) {
+      return undefined;
+    }
+
+    const baseWidth = Math.max(...decodedImages.map((image) => image.naturalWidth || 1));
+    const targetWidth = Math.min(MERGED_IMAGE_MAX_WIDTH, Math.max(1, baseWidth));
+
+    const scaledHeights = decodedImages.map((image) => {
+      const width = image.naturalWidth || targetWidth;
+      const height = image.naturalHeight || 1;
+      return Math.max(1, Math.round((height * targetWidth) / width));
+    });
+
+    const gapTotal = MERGED_IMAGE_PADDING * (decodedImages.length - 1);
+    let totalHeight = scaledHeights.reduce((sum, value) => sum + value, 0) + gapTotal;
+    let globalScale = 1;
+    if (totalHeight > MERGED_IMAGE_MAX_TOTAL_HEIGHT) {
+      globalScale = MERGED_IMAGE_MAX_TOTAL_HEIGHT / totalHeight;
+      totalHeight = MERGED_IMAGE_MAX_TOTAL_HEIGHT;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(targetWidth * globalScale));
+    canvas.height = Math.max(1, Math.round(totalHeight));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return undefined;
+    }
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    let offsetY = 0;
+    for (let i = 0; i < decodedImages.length; i += 1) {
+      const image = decodedImages[i];
+      const drawWidth = canvas.width;
+      const drawHeight = Math.max(1, Math.round(scaledHeights[i] * globalScale));
+      ctx.drawImage(image, 0, offsetY, drawWidth, drawHeight);
+      offsetY += drawHeight;
+      if (i < decodedImages.length - 1) {
+        ctx.fillStyle = "#e5e7eb";
+        ctx.fillRect(0, offsetY, drawWidth, Math.max(1, Math.round(MERGED_IMAGE_PADDING * globalScale)));
+        offsetY += Math.max(1, Math.round(MERGED_IMAGE_PADDING * globalScale));
+      }
+    }
+
+    return canvas.toDataURL("image/png");
+  }
+
   function normalizeAssistantMarkdownForExport(raw) {
     if (!raw) {
       return "";
@@ -233,7 +451,9 @@
       return "";
     }
     if (message.role === "assistant") {
-      return normalizeAssistantMarkdownForExport(message.content || "").trim();
+      return normalizeBrokenMathTokenLines(
+        normalizeAssistantMarkdownForExport(message.content || "")
+      ).trim();
     }
     return (message.content || "").trim();
   }
@@ -243,24 +463,26 @@
       return "";
     }
     const lines = [];
-    lines.push(`# ${thread.title || "未命名会话"}`);
-    lines.push(`- 导出时间: ${formatDateTime(Date.now())}`);
-    lines.push(`- 会话ID: \`${thread.id}\``);
-    if (thread.sessionId) {
-      lines.push(`- 搜索Session: \`${thread.sessionId}\``);
+    const title = (thread.title || "").trim();
+    if (title) {
+      lines.push(`# ${title}`);
+      lines.push("");
     }
-    lines.push("");
 
-    thread.messages.forEach((message, index) => {
+    thread.messages.forEach((message) => {
       const roleTitle = message.role === "user" ? "User" : "Assistant";
-      lines.push(`## ${roleTitle} ${index + 1}`);
-      lines.push(`- 时间: ${formatDateTime(message.createdAt)}`);
+      lines.push(`## ${roleTitle}`);
       lines.push("");
       lines.push(buildMessageMarkdown(message) || "_(空内容)_");
       lines.push("");
     });
 
     return lines.join("\n").trim();
+  }
+
+  function buildExportTitle(thread) {
+    const raw = String(thread?.title || "huge-ai-chat").trim();
+    return raw || "huge-ai-chat";
   }
 
   async function copyTextToClipboard(text) {
@@ -354,9 +576,21 @@
 
   function renderStatusBar() {
     const status = getVisibleStatus();
-    dom.statusBar.className = `status-bar status-${status.kind}`;
+    const indicatorKind = getStatusIndicatorKind(status);
+
+    dom.statusBar.className = `status-bar status-${status.kind}${runtime.statusExpanded ? "" : " hidden"}`;
     dom.statusTitle.textContent = status.title;
     dom.statusTime.textContent = formatStatusTime(status.at);
+
+    if (dom.statusToggleBtn) {
+      dom.statusToggleBtn.className = `btn icon-btn status-toggle status-${indicatorKind}`;
+      dom.statusToggleBtn.setAttribute("aria-pressed", runtime.statusExpanded ? "true" : "false");
+      dom.statusToggleBtn.setAttribute("aria-label", `状态：${status.title}`);
+      const toggleHint = runtime.statusExpanded ? "点击收起状态详情" : "点击展开状态详情";
+      const tooltip = `${status.title} (${toggleHint})`;
+      dom.statusToggleBtn.dataset.tooltip = tooltip;
+      dom.statusToggleBtn.title = tooltip;
+    }
 
     if (status.detail) {
       dom.statusDetail.textContent = status.detail;
@@ -570,12 +804,100 @@
     return out.join("\n");
   }
 
+  function isMathTokenLine(line) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (/^[(){}\[\]=+\-−*/%^]$/.test(trimmed)) {
+      return true;
+    }
+    if (/^[+\-−]?\d+(?:\.\d+)?$/.test(trimmed)) {
+      return true;
+    }
+    if (/^[A-Za-z][A-Za-z0-9_]*$/.test(trimmed)) {
+      return true;
+    }
+    return false;
+  }
+
+  function isSingleMathOperator(token) {
+    return /^[(){}\[\]=+\-−*/%^]$/.test(token);
+  }
+
+  function normalizeBrokenMathTokenLines(raw) {
+    if (!raw) {
+      return raw;
+    }
+
+    const lines = raw.split("\n");
+    const out = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      if (!isMathTokenLine(lines[i])) {
+        out.push(lines[i]);
+        i += 1;
+        continue;
+      }
+
+      let j = i;
+      const tokens = [];
+      while (j < lines.length && isMathTokenLine(lines[j])) {
+        tokens.push(lines[j].trim());
+        j += 1;
+      }
+
+      const totalEquals = tokens.filter((token) => token === "=").length;
+      if (tokens.length < 4 || totalEquals === 0) {
+        out.push(...lines.slice(i, j));
+        i = j;
+        continue;
+      }
+
+      const chunks = [];
+      let chunk = [];
+      for (const token of tokens) {
+        const hasEquals = chunk.includes("=");
+        const previous = chunk.length > 0 ? chunk[chunk.length - 1] : "";
+        if (
+          token === "(" &&
+          hasEquals &&
+          chunk.length >= 4 &&
+          /[0-9A-Za-z)\]]$/.test(previous)
+        ) {
+          chunks.push(chunk);
+          chunk = [token];
+          continue;
+        }
+        chunk.push(token);
+      }
+      if (chunk.length) {
+        chunks.push(chunk);
+      }
+
+      for (const part of chunks) {
+        const equalsCount = part.filter((token) => token === "=").length;
+        const hasSingleOperatorLine = part.some((token) => isSingleMathOperator(token));
+        if (part.length >= 4 && equalsCount === 1 && hasSingleOperatorLine) {
+          out.push(part.join(""));
+        } else {
+          out.push(...part);
+        }
+      }
+
+      i = j;
+    }
+
+    return out.join("\n");
+  }
+
   function renderMarkdown(raw) {
     if (!raw) {
       return "";
     }
 
-    let text = autoFenceLooseCodeBlocks(raw);
+    let text = normalizeBrokenMathTokenLines(autoFenceLooseCodeBlocks(raw));
     const debugBlocks = [];
     const codeBlocks = [];
     const debugRegex = new RegExp(
@@ -694,11 +1016,10 @@
       : state.threads;
 
     dom.historyBtn.disabled = state.threads.length === 0;
-    const totalThreads = state.threads.length;
-    const historyTooltip = totalThreads > 0 ? `历史记录（${totalThreads}）` : "历史记录";
+    const historyTooltip = "历史记录";
     dom.historyBtn.dataset.tooltip = historyTooltip;
     dom.historyBtn.title = historyTooltip;
-    dom.historyBtn.dataset.count = totalThreads > 0 ? String(totalThreads) : "";
+    dom.historyBtn.removeAttribute("data-count");
 
     if (!filteredThreads.length) {
       const li = document.createElement("li");
@@ -748,6 +1069,7 @@
           type: "thread/switch",
           threadId: thread.id,
         });
+        clearAttachments();
         setHistoryOpen(false);
       });
 
@@ -819,15 +1141,24 @@
 
   function renderComposerState() {
     const thread = getActiveThread();
-    const pending = isThreadPending(thread);
-    const canSend = Boolean(thread) && !pending && !runtime.authRunning;
+    const pending = isThreadPending(thread) || runtime.preparingImage;
+    const hasInputText = Boolean((dom.input.value || "").trim());
+    const hasAttachments = Array.isArray(runtime.attachments) && runtime.attachments.length > 0;
+    const hasPayload = hasInputText || hasAttachments;
+    const canSend = Boolean(thread) && !pending && !runtime.authRunning && hasPayload;
     const hasMessages = Boolean(thread && Array.isArray(thread.messages) && thread.messages.length > 0);
 
     dom.sendBtn.disabled = !canSend;
     dom.input.disabled = !thread || runtime.authRunning;
     dom.retryBtn.disabled = runtime.authRunning || !runtime.canRetry || !state.activeThreadId;
+    if (dom.clearAttachmentsBtn) {
+      dom.clearAttachmentsBtn.disabled = !hasAttachments || pending || runtime.authRunning;
+    }
     if (dom.copyThreadBtn) {
       dom.copyThreadBtn.disabled = !hasMessages;
+    }
+    if (dom.exportThreadBtn) {
+      dom.exportThreadBtn.disabled = !hasMessages;
     }
     dom.sendBtn.textContent = pending ? "发送中..." : "Send";
 
@@ -837,6 +1168,10 @@
     }
     if (runtime.authRunning) {
       dom.input.placeholder = "正在进行登录验证，完成后可继续提问。";
+      return;
+    }
+    if (runtime.preparingImage) {
+      dom.input.placeholder = "正在处理截图，请稍候...";
       return;
     }
     if (pending) {
@@ -953,6 +1288,7 @@
     vscode.setState({
       ...oldState,
       draft: dom.input.value,
+      statusExpanded: runtime.statusExpanded,
     });
   }
 
@@ -961,36 +1297,72 @@
     if (typeof oldState.draft === "string") {
       dom.input.value = oldState.draft;
     }
+    if (typeof oldState.statusExpanded === "boolean") {
+      runtime.statusExpanded = oldState.statusExpanded;
+    }
   }
 
-  function sendCurrentMessage() {
+  async function sendCurrentMessage() {
     const thread = getActiveThread();
     if (!thread) {
       return;
     }
 
     const text = dom.input.value.trim();
-    if (!text) {
+    const imageCount = Array.isArray(runtime.attachments) ? runtime.attachments.length : 0;
+    if (!text && imageCount <= 0) {
       return;
+    }
+
+    let mergedImageDataUrl;
+    if (imageCount > 0) {
+      runtime.preparingImage = true;
+      renderComposerState();
+      try {
+        mergedImageDataUrl = await buildMergedAttachmentDataUrl();
+      } catch {
+        mergedImageDataUrl = undefined;
+      } finally {
+        runtime.preparingImage = false;
+        renderComposerState();
+      }
+
+      if (!mergedImageDataUrl) {
+        setStatus({
+          kind: "error",
+          title: "图片处理失败",
+          detail: "无法合并截图，请重新粘贴后重试。",
+          suggestion: "可先清除图片后再粘贴，或减少截图数量。",
+          threadId: thread.id,
+          at: Date.now(),
+        });
+        return;
+      }
     }
 
     post({
       type: "chat/send",
       threadId: thread.id,
       text,
-      language: "zh-CN",
+      language: thread.language,
+      imageDataUrl: mergedImageDataUrl,
+      imageCount: imageCount > 0 ? imageCount : undefined,
     });
     setHistoryOpen(false);
     setStatus({
       kind: "progress",
       title: "消息已发送",
-      detail: "请求已提交给扩展，正在启动搜索。",
+      detail:
+        imageCount > 0
+          ? `请求已提交给扩展，正在上传 ${imageCount} 张截图${imageCount > 1 ? "（已合并）" : ""}。`
+          : "请求已提交给扩展，正在启动搜索。",
       suggestion: "请稍候，结果返回后会自动更新。",
       threadId: thread.id,
       at: Date.now(),
     });
 
     dom.input.value = "";
+    clearAttachments();
     saveDraft();
     renderComposerState();
   }
@@ -1002,16 +1374,25 @@
 
     switch (message.type) {
       case "state/full":
-      case "state/updated":
+      case "state/updated": {
+        const previousActiveThreadId = state.activeThreadId;
         state.version = message.state.version;
         state.activeThreadId = message.state.activeThreadId;
         state.threads = Array.isArray(message.state.threads) ? message.state.threads : [];
+        if (
+          previousActiveThreadId &&
+          previousActiveThreadId !== state.activeThreadId &&
+          runtime.attachments.length > 0
+        ) {
+          clearAttachments();
+        }
         pruneThreadStatus();
         renderThreads();
         renderMessages();
         renderAuthBanner();
         renderStatusBar();
         break;
+      }
       case "chat/status":
         setStatus(message.status);
         break;
@@ -1075,6 +1456,12 @@
       });
     }
 
+    if (dom.statusToggleBtn) {
+      dom.statusToggleBtn.addEventListener("click", () => {
+        setStatusExpanded(!runtime.statusExpanded);
+      });
+    }
+
     dom.historyBtn.addEventListener("click", () => {
       toggleHistoryOpen();
     });
@@ -1128,11 +1515,41 @@
       });
     }
 
-    dom.newThreadBtn.addEventListener("click", () => {
-      post({
-        type: "thread/create",
-        language: "zh-CN",
+    if (dom.exportThreadBtn) {
+      dom.exportThreadBtn.addEventListener("click", () => {
+        const thread = getActiveThread();
+        if (!thread || !thread.messages.length) {
+          setStatus({
+            kind: "warning",
+            title: "没有可导出的内容",
+            detail: "当前线程为空，无法导出 Markdown。",
+            suggestion: "先发送一条消息，再点击导出。",
+            at: Date.now(),
+          });
+          return;
+        }
+
+        const markdown = buildThreadMarkdown(thread);
+        post({
+          type: "thread/exportMarkdown",
+          threadId: thread.id,
+          title: buildExportTitle(thread),
+          markdown,
+        });
+        setStatus({
+          kind: "progress",
+          title: "正在导出 Markdown",
+          detail: "文件写入完成后会自动在编辑器中打开。",
+          suggestion: "可直接在打开的文档中继续编辑。",
+          threadId: thread.id,
+          at: Date.now(),
+        });
       });
+    }
+
+    dom.newThreadBtn.addEventListener("click", () => {
+      post({ type: "thread/create" });
+      clearAttachments();
       runtime.historyKeyword = "";
       dom.historySearchInput.value = "";
       setHistoryOpen(false);
@@ -1140,6 +1557,7 @@
 
     dom.clearHistoryBtn.addEventListener("click", () => {
       post({ type: "thread/clearAll" });
+      clearAttachments();
       setStatus({
         kind: "progress",
         title: "正在清空历史",
@@ -1165,19 +1583,81 @@
     });
 
     dom.sendBtn.addEventListener("click", () => {
-      sendCurrentMessage();
+      void sendCurrentMessage();
     });
 
     dom.input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        sendCurrentMessage();
+        void sendCurrentMessage();
       }
     });
 
     dom.input.addEventListener("input", () => {
       saveDraft();
+      renderComposerState();
     });
+
+    dom.input.addEventListener("paste", (event) => {
+      const clipboardItems = event.clipboardData ? Array.from(event.clipboardData.items || []) : [];
+      const imageFiles = clipboardItems
+        .filter((item) => item && item.kind === "file" && String(item.type || "").startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file) => Boolean(file));
+      if (!imageFiles.length) {
+        return;
+      }
+
+      event.preventDefault();
+      void addAttachmentsFromFiles(imageFiles).then((added) => {
+        if (!added) {
+          return;
+        }
+        setStatus({
+          kind: "success",
+          title: "截图已粘贴",
+          detail:
+            added > 1
+              ? `本次新增 ${added} 张截图，发送时会自动合并成单图。`
+              : "已添加 1 张截图。",
+          suggestion: "可继续输入问题后发送，或再粘贴更多截图。",
+          threadId: state.activeThreadId || undefined,
+          at: Date.now(),
+        });
+      });
+    });
+
+    if (dom.clearAttachmentsBtn) {
+      dom.clearAttachmentsBtn.addEventListener("click", () => {
+        clearAttachments();
+        setStatus({
+          kind: "idle",
+          title: "已清除截图",
+          detail: "附件区已清空。",
+          suggestion: "你可以重新 Ctrl+V 粘贴截图。",
+          threadId: state.activeThreadId || undefined,
+          at: Date.now(),
+        });
+      });
+    }
+
+    if (dom.attachmentList) {
+      dom.attachmentList.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+        const removeBtn = target.closest(".attachment-remove");
+        if (!(removeBtn instanceof HTMLButtonElement)) {
+          return;
+        }
+        const attachmentId = removeBtn.dataset.attachmentId || "";
+        if (!attachmentId) {
+          return;
+        }
+        removeAttachment(attachmentId);
+      });
+    }
 
     dom.messages.addEventListener("click", (event) => {
       void handleMessagesClick(event);
@@ -1198,6 +1678,7 @@
   restoreDraft();
   wireEvents();
   renderStatusBar();
+  renderAttachments();
   renderComposerState();
   post({ type: "panel/ready" });
 })();

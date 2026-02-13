@@ -103,6 +103,255 @@ follow_up: true
 
 💡 **追问原则**：宁可多追一次，不可少追一次！追问成本低，错误代价高。`;
 
+const QUERY_GUARDRAIL_MARKER = "[HUGE_AI_GUARDRAIL_V1]";
+const NO_RECORD_MESSAGE = "该词条在当前技术语料库和实时搜索中无可验证记录。";
+const NO_RECORD_DISCLAIMER = "说明：当前仅表示未检索到可验证权威来源，不等于该词条绝对不存在。";
+const DEFAULT_QUERY_GUARDRAIL_PROMPT = `${QUERY_GUARDRAIL_MARKER}
+【技术词条防幻觉模式】
+当用户询问技术词条/库/框架时，必须执行以下流程：
+1. 先检索再回答：优先检索官方文档、官方 GitHub 仓库、标准组织文档（RFC/W3C/ISO）。
+2. 证据门槛：至少提供 1 条权威来源后再下结论，Stack Overflow 仅可作为补充来源。
+3. 无法验证时固定回复：若未检索到可验证权威来源，直接回答“${NO_RECORD_MESSAGE}”，并说明是“未检索到”而非“绝对不存在”。
+4. 禁止猜测：严禁输出“可能是/类似”的候选项，除非提供可访问链接并显式标注“候选项”。
+5. 工具失败透明化：若检索失败、超时或权限不足，必须明确失败原因，不得臆测补全答案。`;
+
+const STRICT_GROUNDING_ENABLED = process.env.HUGE_AI_SEARCH_STRICT_GROUNDING !== "0";
+const CUSTOM_QUERY_GUARDRAIL_PROMPT = (process.env.HUGE_AI_SEARCH_GUARDRAIL_PROMPT || "").trim();
+
+function getEffectiveGuardrailPrompt(): string {
+  if (!CUSTOM_QUERY_GUARDRAIL_PROMPT) {
+    return DEFAULT_QUERY_GUARDRAIL_PROMPT;
+  }
+  if (CUSTOM_QUERY_GUARDRAIL_PROMPT.includes(QUERY_GUARDRAIL_MARKER)) {
+    return CUSTOM_QUERY_GUARDRAIL_PROMPT;
+  }
+  return `${QUERY_GUARDRAIL_MARKER}\n${CUSTOM_QUERY_GUARDRAIL_PROMPT}`;
+}
+
+/**
+ * Strip the injected guardrail prompt text from the AI answer so it never
+ * leaks into user-visible output.
+ */
+function stripGuardrailPrompt(text: string): string {
+  if (!text || !text.includes(QUERY_GUARDRAIL_MARKER)) {
+    return text;
+  }
+  // Remove the full default guardrail block (marker + 5-line instruction)
+  let cleaned = text.replace(DEFAULT_QUERY_GUARDRAIL_PROMPT, "");
+  // Also remove any custom guardrail prompt that may appear
+  if (CUSTOM_QUERY_GUARDRAIL_PROMPT) {
+    cleaned = cleaned.replace(getEffectiveGuardrailPrompt(), "");
+  }
+  // Catch any remaining bare marker
+  cleaned = cleaned.replace(QUERY_GUARDRAIL_MARKER, "");
+  return cleaned.trim();
+}
+
+function applyQueryGuardrails(query: string): string {
+  const trimmed = query.trim();
+  if (!STRICT_GROUNDING_ENABLED || !trimmed) {
+    return trimmed;
+  }
+  if (!isTechTermLookupQuery(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.includes(QUERY_GUARDRAIL_MARKER)) {
+    return trimmed;
+  }
+  return `${trimmed}\n\n${getEffectiveGuardrailPrompt()}`.trim();
+}
+
+function isTechTermLookupQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const normalized = trimmed.replace(/[?？!！。,.，；;:：]+$/g, "").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const lower = normalized.toLowerCase();
+  const explicitLookupHints = ["词条", "定义", "concept", "definition", "meaning"];
+  if (explicitLookupHints.some((keyword) => lower.includes(keyword))) {
+    return true;
+  }
+
+  // 明确的“术语 + 是什么/什么意思”问法才视为词条查询。
+  if (
+    /^([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9._:+#-]{1,63})\s*(是什么|是啥|什么意思|含义|定义)$/.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  if (/^what\s+is\s+[A-Za-z][A-Za-z0-9._:+#-]{1,63}$/i.test(normalized)) {
+    return true;
+  }
+
+  // 单 token（如 React、Zod、FastAPI）仍按词条查询处理。
+  if (/^[A-Za-z][A-Za-z0-9._:+#-]{1,63}$/.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasAuthoritativeSource(sources: SearchResult["sources"], query?: string): boolean {
+  // Extract a normalized term from the query for official-site matching.
+  // e.g. "Vite" → "vite", "what is FastAPI" → "fastapi", "Redis是什么" → "redis"
+  let queryTerm = "";
+  if (query) {
+    const trimmed = query.trim().replace(/[?？!！。,.，；;:：]+$/g, "").trim();
+    const lower = trimmed.toLowerCase();
+    // "what is X"
+    const enMatch = lower.match(/^what\s+is\s+(.+)$/i);
+    // "X是什么/是啥/什么意思/含义/定义"
+    const zhMatch = lower.match(/^(.+?)\s*(?:是什么|是啥|什么意思|含义|定义)$/);
+    if (enMatch) {
+      queryTerm = enMatch[1].trim().toLowerCase();
+    } else if (zhMatch) {
+      queryTerm = zhMatch[1].trim().toLowerCase();
+    } else if (/^[A-Za-z][A-Za-z0-9._:+#-]{1,63}$/.test(trimmed)) {
+      queryTerm = lower;
+    }
+  }
+
+  return sources.some((source) => {
+    try {
+      const url = new URL(source.url);
+      const host = url.hostname.toLowerCase();
+      const pathName = url.pathname.toLowerCase();
+
+      // 社区来源可以作为补充证据，但不能单独视为权威来源。
+      if (
+        host === "stackoverflow.com" ||
+        host.endsWith(".stackoverflow.com") ||
+        host.endsWith(".stackexchange.com")
+      ) {
+        return false;
+      }
+
+      if (
+        host === "github.com" ||
+        host.endsWith(".github.com")
+      ) {
+        return true;
+      }
+
+      // Standards bodies
+      if (
+        host === "rfc-editor.org" ||
+        host.endsWith(".rfc-editor.org") ||
+        host === "ietf.org" ||
+        host.endsWith(".ietf.org") ||
+        host === "w3.org" ||
+        host.endsWith(".w3.org") ||
+        host === "iso.org" ||
+        host.endsWith(".iso.org") ||
+        host === "ecma-international.org" ||
+        host.endsWith(".ecma-international.org") ||
+        host === "whatwg.org" ||
+        host.endsWith(".whatwg.org")
+      ) {
+        return true;
+      }
+
+      // Package registries
+      if (
+        host === "www.npmjs.com" || host === "npmjs.com" ||
+        host === "pypi.org" || host.endsWith(".pypi.org") ||
+        host === "crates.io" ||
+        host === "pkg.go.dev" ||
+        host === "rubygems.org" ||
+        host === "www.nuget.org" || host === "nuget.org" ||
+        host === "packagist.org" ||
+        host === "pub.dev" ||
+        host === "mvnrepository.com" || host === "www.mvnrepository.com"
+      ) {
+        return true;
+      }
+
+      // Well-known tech platforms
+      if (
+        host === "dev.to" ||
+        host === "medium.com" || host.endsWith(".medium.com") ||
+        host === "wikipedia.org" || host.endsWith(".wikipedia.org")
+      ) {
+        return true;
+      }
+
+      // Documentation sites
+      if (
+        host.startsWith("docs.") ||
+        host.includes(".docs.") ||
+        host === "developer.mozilla.org" ||
+        host.endsWith(".readthedocs.io") ||
+        pathName.includes("/docs/") ||
+        pathName.includes("/reference/") ||
+        pathName.includes("/api/")
+      ) {
+        return true;
+      }
+
+      // Official sites: domain contains the query term
+      // e.g. query "Vite" matches vitejs.dev, query "prisma" matches prisma.io
+      if (queryTerm && queryTerm.length >= 2) {
+        // Strip common separators to match e.g. "fastapi" in "fastapi.tiangolo.com"
+        const hostBase = host.replace(/^www\./, "");
+        if (hostBase.includes(queryTerm)) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Returns true when the AI returned a substantive answer with sources,
+ * indicating real content was found even if not from whitelisted domains.
+ */
+function hasSubstantiveAnswer(result: SearchResult): boolean {
+  const strippedAnswer = stripGuardrailPrompt(result.aiAnswer || "");
+  return strippedAnswer.length > 200 && result.sources.length >= 1;
+}
+
+function shouldForceNoRecord(
+  query: string,
+  result: SearchResult,
+  isFollowUp: boolean,
+  hasImageInput: boolean
+): boolean {
+  if (!STRICT_GROUNDING_ENABLED || !result.success) {
+    return false;
+  }
+  if (isFollowUp || hasImageInput) {
+    return false;
+  }
+  if (!isTechTermLookupQuery(query)) {
+    return false;
+  }
+  if (hasAuthoritativeSource(result.sources, query)) {
+    return false;
+  }
+  if (hasSubstantiveAnswer(result)) {
+    return false;
+  }
+  return true;
+}
+
+function forceNoRecordResult(result: SearchResult): void {
+  result.aiAnswer = `${NO_RECORD_MESSAGE}\n\n${NO_RECORD_DISCLAIMER}`;
+  result.sources = [];
+  result.error = "";
+}
+
 // 格式化搜索结果为 Markdown
 function formatSearchResult(
   result: SearchResult,
@@ -117,7 +366,7 @@ function formatSearchResult(
     ? `## AI 追问结果\n\n`
     : `## AI 搜索结果\n\n`;
 
-  output += `**查询**: ${result.query}\n\n`;
+  output += `**查询**: ${result.query?.trim() ? result.query : "(仅图片输入)"}\n\n`;
   output += `### AI 回答\n\n${result.aiAnswer}\n\n`;
 
   if (result.sources.length > 0) {
@@ -435,18 +684,28 @@ server.tool(
       .string()
       .optional()
       .describe("会话 ID（用于多窗口独立追问，首次搜索会自动生成并返回）"),
+    image_path: z
+      .string()
+      .optional()
+      .describe("可选。要上传到 Google AI 的本地图片绝对路径（当前单图输入）"),
   },
   async (args) => {
-    const { query, language, follow_up, session_id } = args;
+    const { query, language, follow_up, session_id, image_path } = args;
     const requestStartMs = Date.now();
+    const normalizedQuery = query.trim();
+    const normalizedImagePath = image_path?.trim() || undefined;
+    const requestFollowUp = follow_up && !normalizedImagePath;
+    const hasImageInput = Boolean(normalizedImagePath);
+    const guardedQuery =
+      !requestFollowUp && !hasImageInput ? applyQueryGuardrails(normalizedQuery) : normalizedQuery;
 
     log("INFO",
-      `收到工具调用: query='${query}', language=${language}, follow_up=${follow_up}, session_id=${session_id || '(新会话)'}`
+      `收到工具调用: query='${normalizedQuery}', language=${language}, follow_up=${requestFollowUp}, session_id=${session_id || '(新会话)'}, image=${normalizedImagePath ? "yes" : "no"}`
     );
 
-    if (!query) {
+    if (!normalizedQuery && !normalizedImagePath) {
       return {
-        content: [{ type: "text" as const, text: "错误: 请提供搜索关键词" }],
+        content: [{ type: "text" as const, text: "错误: 请提供搜索关键词或图片路径" }],
       };
     }
 
@@ -479,6 +738,7 @@ server.tool(
 
     let localSlotAcquired = false;
     let globalLease: GlobalLease | null = null;
+    let strictNoRecordTriggered = false;
 
     try {
       // 检查是否有 CAPTCHA 正在处理
@@ -539,13 +799,13 @@ server.tool(
       );
 
       // 获取或创建会话
-      const preferredSessionId = follow_up
+      const preferredSessionId = requestFollowUp
         ? session_id
         : defaultSessionId && sessions.has(defaultSessionId)
           ? defaultSessionId
           : undefined;
       const { sessionId: activeSessionId, session } = await getOrCreateSession(preferredSessionId);
-      if (!follow_up) {
+      if (!requestFollowUp) {
         defaultSessionId = activeSessionId;
       }
 
@@ -588,18 +848,33 @@ server.tool(
 
       let searchPromise: Promise<SearchResult>;
 
-      if (follow_up && searcherInstance.hasActiveSession()) {
+      if (requestFollowUp && searcherInstance.hasActiveSession()) {
         console.error(`使用追问模式（会话: ${activeSessionId}）`);
-        searchPromise = searcherInstance.continueConversation(query);
+        searchPromise = searcherInstance.continueConversation(normalizedQuery);
       } else {
-        if (follow_up && !searcherInstance.hasActiveSession()) {
+        if (requestFollowUp && !searcherInstance.hasActiveSession()) {
           console.error("请求追问但没有活跃会话，使用新搜索");
         }
+        if (follow_up && normalizedImagePath) {
+          console.error("检测到图片输入，追问模式已自动切换为新搜索");
+        }
+        if (guardedQuery !== normalizedQuery) {
+          console.error("已对技术词条查询注入防幻觉提示词");
+        }
         console.error(`执行新搜索（会话: ${activeSessionId}）`);
-        searchPromise = searcherInstance.search(query, language);
+        searchPromise = searcherInstance.search(guardedQuery, language, normalizedImagePath);
       }
 
       const result = await Promise.race([searchPromise, timeoutPromise]);
+      if (result.success) {
+        result.query = normalizedQuery;
+        result.aiAnswer = stripGuardrailPrompt(result.aiAnswer);
+        if (shouldForceNoRecord(normalizedQuery, result, requestFollowUp, hasImageInput)) {
+          forceNoRecordResult(result);
+          strictNoRecordTriggered = true;
+          log("INFO", `命中严格防幻觉策略，已强制返回拒答文案: query='${normalizedQuery}'`);
+        }
+      }
 
       // 更新会话访问时间
       session.lastAccess = Date.now();
@@ -628,14 +903,25 @@ server.tool(
         }
         const retryTimeoutMs = Math.min(SEARCH_EXECUTION_TIMEOUT_MS, retryRemainingMs);
         const retryResult = await Promise.race([
-          searcherInstance.search(query, language),
+          searcherInstance.search(guardedQuery, language, normalizedImagePath),
           new Promise<SearchResult>((_, reject) =>
             setTimeout(() => reject(new Error(`重试搜索超时（${retryTimeoutMs}ms）`)), retryTimeoutMs)
           ),
         ]);
         if (retryResult.success) {
-          const output = formatSearchResult(retryResult, follow_up, activeSessionId);
+          retryResult.query = normalizedQuery;
+          retryResult.aiAnswer = stripGuardrailPrompt(retryResult.aiAnswer);
+          if (shouldForceNoRecord(normalizedQuery, retryResult, requestFollowUp, hasImageInput)) {
+            forceNoRecordResult(retryResult);
+            strictNoRecordTriggered = true;
+            log("INFO", `重试命中严格防幻觉策略，已强制返回拒答文案: query='${normalizedQuery}'`);
+          }
+          const output = formatSearchResult(retryResult, requestFollowUp, activeSessionId);
           console.error(`重试搜索成功，返回结果长度: ${output.length}`);
+          if (strictNoRecordTriggered && !requestFollowUp) {
+            await closeSession(activeSessionId);
+            console.error(`严格拦截后已重置会话上下文: ${activeSessionId}`);
+          }
           return {
             content: [{ type: "text" as const, text: output }],
           };
@@ -684,11 +970,14 @@ server.tool(
         log("ERROR", `搜索失败: ${errorMsg}`);
         
         // 判断错误类型，给出针对性的解决方案
-        const isLoginRequired = 
-          errorMsg.includes("登录") || 
-          errorMsg.includes("验证") ||
-          errorMsg.includes("captcha") ||
-          errorMsg.includes("未能提取");
+        const errorLower = errorMsg.toLowerCase();
+        const isLoginRequired =
+          errorMsg.includes("登录") ||
+          errorMsg.includes("验证码") ||
+          errorMsg.includes("验证超时") ||
+          errorMsg.includes("需要验证") ||
+          errorLower.includes("captcha") ||
+          errorMsg.includes("未能提取到 AI 回答内容，可能需要登录");
         
         let solution = "";
         if (isLoginRequired) {
@@ -706,9 +995,9 @@ server.tool(
         } else {
           solution = 
             `### 🔧 可能的解决方案\n\n` +
-            `- 检查网络连接是否正常\n` +
-            `- 稍后重试\n` +
-            `- 如果问题持续，请帮助用户在终端运行 \`npx -y -p huge-ai-search@latest huge-ai-search-setup\` 重新登录`;
+            `- 检查网络连接与代理配置是否正常\n` +
+            `- 稍后重试（图片分析可能需要更久）\n` +
+            `- 若持续失败，请查看 Huge AI Search 日志并附带错误上下文反馈`;
         }
         
         return {
@@ -724,8 +1013,12 @@ server.tool(
       // 搜索成功，确保 CAPTCHA 状态已清除
       markCaptchaEnd();
 
-      const output = formatSearchResult(result, follow_up, activeSessionId);
+      const output = formatSearchResult(result, requestFollowUp, activeSessionId);
       log("INFO", `搜索成功，返回结果长度: ${output.length}`);
+      if (strictNoRecordTriggered && !requestFollowUp) {
+        await closeSession(activeSessionId);
+        console.error(`严格拦截后已重置会话上下文: ${activeSessionId}`);
+      }
 
       return {
         content: [{ type: "text" as const, text: output }],

@@ -95,6 +95,34 @@ select {
   outline-offset: 1px;
 }
 
+.status-toggle {
+  border: 1px solid transparent;
+}
+
+.status-toggle-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+
+.status-toggle.status-progress .status-toggle-dot {
+  background: var(--vscode-charts-blue, var(--vscode-focusBorder));
+}
+
+.status-toggle.status-success .status-toggle-dot {
+  background: var(--vscode-testing-iconPassed, #2ea043);
+}
+
+.status-toggle.status-error .status-toggle-dot {
+  background: var(--vscode-inputValidation-errorBorder);
+}
+
+.status-toggle[aria-pressed="true"] {
+  border-color: var(--vscode-focusBorder);
+}
+
 .icon-btn::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -119,23 +147,6 @@ select {
 .icon-btn:focus-visible::after {
   opacity: 1;
   transform: translateY(0);
-}
-
-.icon-btn[data-count]:not([data-count=""])::before {
-  content: attr(data-count);
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 15px;
-  height: 15px;
-  border-radius: 999px;
-  padding: 0 3px;
-  background: var(--vscode-badge-background, var(--vscode-focusBorder));
-  color: var(--vscode-badge-foreground, #ffffff);
-  font-size: 10px;
-  line-height: 15px;
-  text-align: center;
-  border: 1px solid var(--vscode-editor-background);
 }
 
 .btn.active {
@@ -504,7 +515,86 @@ select {
   border-top: 1px solid var(--vscode-panel-border);
   padding: 10px;
   display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.attachment-bar {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attachment-bar.hidden {
+  display: none;
+}
+
+.attachment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.attachment-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.attachment-item {
+  position: relative;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  width: 94px;
+  min-width: 94px;
+  height: 66px;
+  overflow: hidden;
+  background: var(--vscode-editor-background);
+}
+
+.attachment-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  border: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.attachment-remove:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.composer-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
 }
 
 .composer textarea {
@@ -537,6 +627,10 @@ select {
   gap: 4px;
 }
 
+.status-bar.hidden {
+  display: none;
+}
+
 .status-head {
   display: flex;
   align-items: center;
@@ -567,38 +661,38 @@ select {
   color: var(--vscode-descriptionForeground);
 }
 
-.status-progress {
+.status-bar.status-progress {
   border-left-color: var(--vscode-charts-blue, var(--vscode-focusBorder));
 }
 
-.status-progress .status-dot {
+.status-bar.status-progress .status-dot {
   background: var(--vscode-charts-blue, var(--vscode-focusBorder));
 }
 
-.status-success {
+.status-bar.status-success {
   border-left-color: var(--vscode-testing-iconPassed, #2ea043);
 }
 
-.status-success .status-dot {
+.status-bar.status-success .status-dot {
   background: var(--vscode-testing-iconPassed, #2ea043);
 }
 
-.status-warning {
+.status-bar.status-warning {
   border-left-color: var(--vscode-inputValidation-warningBorder);
 }
 
-.status-warning .status-dot {
+.status-bar.status-warning .status-dot {
   background: var(--vscode-inputValidation-warningBorder);
 }
 
-.status-error {
+.status-bar.status-error {
   border-left-color: var(--vscode-inputValidation-errorBorder);
 }
 
-.status-error .status-dot {
+.status-bar.status-error .status-dot {
   background: var(--vscode-inputValidation-errorBorder);
 }
 
-.status-idle {
+.status-bar.status-idle {
   border-left-color: var(--vscode-panel-border);
 }

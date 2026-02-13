@@ -356,6 +356,9 @@ Zustand 具体怎么用？有什么最佳实践？
 | `language`   | ❌   | `zh-CN` | 结果语言（zh-CN, en-US, ja-JP, ko-KR, de-DE, fr-FR） |
 | `follow_up`  | ❌   | `false` | 追问模式：在当前对话上下文中追问                     |
 | `session_id` | ❌   | 自动生成  | 会话 ID：用于多窗口独立追问                          |
+| `image_path` | ❌   | -         | 本地图片绝对路径；当前为单图输入（可与文本问题一起发送） |
+
+> 说明：传入 `image_path` 时会自动按“新搜索”处理（不走追问复用链路）。
 
 ## 多会话支持
 
@@ -397,6 +400,10 @@ A: 默认日志目录是 `~/.huge-ai-search/logs/`，按天落盘，文件名示
 
 - `HUGE_AI_SEARCH_LOG_DIR`：自定义日志目录
 - `HUGE_AI_SEARCH_LOG_RETENTION_DAYS`：日志保留天数（默认 14 天）
+- `HUGE_AI_SEARCH_STRICT_GROUNDING`：严格防幻觉开关（默认 `1` 开启，设为 `0` 关闭）
+- `HUGE_AI_SEARCH_GUARDRAIL_PROMPT`：覆盖默认防幻觉提示词（可自定义检索/拒答策略）
+
+> 语义说明：当严格模式命中“无可验证记录”拒答时，表示“当前未检索到可验证权威来源”，不代表该词条绝对不存在。
 
 默认并发策略为“均衡模式”（内置固定值）：
 

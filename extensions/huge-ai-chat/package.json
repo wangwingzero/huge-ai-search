@@ -1,8 +1,9 @@
 {
   "name": "huge-ai-chat",
   "publisher": "hudawang",
-  "displayName": "Huge AI Chat",
+  "displayName": "HUGE",
   "description": "在 VS Code 中直接与 Google AI Mode 对话（复用 huge-ai-search MCP）",
+  "icon": "media/huge-ai-chat-icon.png",
   "version": "0.1.0",
   "author": "TigerWang",
   "license": "MIT",
@@ -32,34 +33,86 @@
     "onCommand:hugeAiChat.openChat",
     "onCommand:hugeAiChat.newThread",
     "onCommand:hugeAiChat.runSetup",
-    "onCommand:hugeAiChat.clearHistory"
+    "onCommand:hugeAiChat.clearHistory",
+    "onCommand:hugeAiChat.sendSelectionToHuge",
+    "onView:hugeAiChat.home"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hugeAiChatContainer",
+          "title": "HUGE",
+          "icon": "media/huge-ai-chat-icon.png"
+        }
+      ]
+    },
+    "views": {
+      "hugeAiChatContainer": [
+        {
+          "id": "hugeAiChat.home",
+          "name": "HUGE"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "hugeAiChat.openChat",
-        "title": "Huge AI Chat: Open Chat",
-        "category": "Huge AI Chat"
+        "title": "HUGE",
+        "category": "HUGE",
+        "icon": {
+          "light": "media/huge-ai-chat-icon.png",
+          "dark": "media/huge-ai-chat-icon.png"
+        }
       },
       {
         "command": "hugeAiChat.newThread",
-        "title": "Huge AI Chat: New Thread",
-        "category": "Huge AI Chat"
+        "title": "HUGE: New Thread",
+        "category": "HUGE"
       },
       {
         "command": "hugeAiChat.runSetup",
-        "title": "Huge AI Chat: Run Login Setup",
-        "category": "Huge AI Chat"
+        "title": "HUGE: Run Login Setup",
+        "category": "HUGE"
       },
       {
         "command": "hugeAiChat.clearHistory",
-        "title": "Huge AI Chat: Clear History",
-        "category": "Huge AI Chat"
+        "title": "HUGE: Clear History",
+        "category": "HUGE"
+      },
+      {
+        "command": "hugeAiChat.sendSelectionToHuge",
+        "title": "发送到 Huge",
+        "category": "HUGE",
+        "icon": {
+          "light": "media/send-selection-light.svg",
+          "dark": "media/send-selection-dark.svg"
+        }
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "hugeAiChat.sendSelectionToHuge",
+          "when": "editorHasSelection && editorTextFocus",
+          "group": "navigation@99"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "hugeAiChat.openChat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hugeAiChat.sendSelectionToHuge",
+          "when": "editorHasSelection && editorTextFocus",
+          "group": "navigation@99"
+        }
+      ]
+    },
     "configuration": {
-      "title": "Huge AI Chat",
+      "title": "HUGE",
       "properties": {
         "hugeAiChat.defaultLanguage": {
           "type": "string",

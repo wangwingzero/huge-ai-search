@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   parseSearchToolText,
   isAuthRelatedError,
+  isNoRecordResponseText,
 } = require("../dist/chat/responseFormatter.js");
 
 test("parseSearchToolText should parse answer/sources/session/debug marker", () => {
@@ -41,6 +42,26 @@ test("parseSearchToolText should classify auth error", () => {
   assert.equal(parsed.isAuthError, true);
 });
 
+test("parseSearchToolText should not treat successful envelopes with auth keywords as errors", () => {
+  const raw = [
+    "## AI 搜索结果",
+    "",
+    "**查询**: 登录 是什么",
+    "",
+    "### AI 回答",
+    "",
+    "“登录”是用户完成身份认证后访问系统的过程。",
+    "",
+    "---",
+    "🔑 **会话 ID**: `session_abc`",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.equal(parsed.isAuthError, false);
+  assert.equal(parsed.sessionId, "session_abc");
+});
+
 test("isAuthRelatedError should detect captcha keyword", () => {
   assert.equal(isAuthRelatedError("CAPTCHA 验证超时"), true);
   assert.equal(isAuthRelatedError("普通错误"), false);
@@ -59,5 +80,44 @@ test("parseSearchToolText should fallback extract plain urls as sources", () => 
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 2);
   assert.match(parsed.renderedMarkdown, /### 来源/);
-  assert.match(parsed.renderedMarkdown, /\[example\.com\]\(https:\/\/example\.com\/a\)/);
+  assert.match(parsed.renderedMarkdown, /\[example\.com\]\(<https:\/\/example\.com\/a>\)/);
+});
+
+test("parseSearchToolText should keep no-record response and drop extracted sources", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "该词条在当前技术语料库和实时搜索中无记录",
+    "",
+    "参考链接：https://example.com/should-not-appear",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.equal(parsed.sources.length, 0);
+  assert.doesNotMatch(parsed.renderedMarkdown, /### 来源/);
+});
+
+test("isNoRecordResponseText should support old and new phrases", () => {
+  assert.equal(isNoRecordResponseText("该词条在当前技术语料库和实时搜索中无记录"), true);
+  assert.equal(isNoRecordResponseText("该词条在当前技术语料库和实时搜索中无可验证记录。"), true);
+  assert.equal(isNoRecordResponseText("这是普通回答"), false);
+});
+
+test("parseSearchToolText should escape brackets in source title", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "如下：",
+    "",
+    "### 来源 (1 个)",
+    "",
+    "1. [律师整理：[20-（受害人实际年龄-60）] 示例](https://zhuanlan.zhihu.com/p/350670355#:~:text=demo)",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.equal(parsed.sources.length, 1);
+  assert.match(parsed.renderedMarkdown, /\\\[20-（受害人实际年龄-60）\\\]/);
+  assert.match(parsed.renderedMarkdown, /\(<https:\/\/zhuanlan\.zhihu\.com\/p\/350670355/);
 });

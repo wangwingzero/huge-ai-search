@@ -5,7 +5,13 @@
  * 完整移植自 Python 版本 google-ai-search-mcp
  */
 
-import { chromium, Browser, BrowserContext, Page } from "playwright";
+import {
+  chromium,
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  Page,
+} from "playwright";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
@@ -90,6 +96,77 @@ const FOLLOW_UP_SELECTORS = [
   'div[contenteditable="true"]',
 ];
 
+const PROMPT_INPUT_SELECTORS = [
+  'textarea[name="q"]',
+  'textarea[aria-label*="Search"]',
+  'textarea[aria-label*="搜索"]',
+  'textarea[aria-label*="Ask"]',
+  'textarea[placeholder*="Ask"]',
+  'textarea[placeholder*="搜索"]',
+  'textarea[placeholder*="提问"]',
+  'input[name="q"]',
+  'input[aria-label*="Search"]',
+  'input[aria-label*="搜索"]',
+  'textarea',
+  'input[type="text"]',
+];
+
+const PROMPT_SUBMIT_BUTTON_SELECTORS = [
+  'button[aria-label*="发送"]',
+  'button[aria-label*="Send"]',
+  'button[aria-label*="submit"]',
+  '[role="button"][aria-label*="发送"]',
+  '[role="button"][aria-label*="Send"]',
+  '[role="button"][aria-label*="submit"]',
+  'button[type="submit"]',
+];
+
+const IMAGE_UPLOAD_TRIGGER_SELECTORS = [
+  'button[aria-label*="更多输入项"]',
+  'button[aria-label*="更多输入"]',
+  'button[aria-label*="More input"]',
+  'button[aria-label*="input options"]',
+  '[role="button"][aria-label*="更多输入项"]',
+  '[role="button"][aria-label*="More input"]',
+  'button[aria-label*="图片"]',
+  'button[aria-label*="图像"]',
+  'button[aria-label*="上传"]',
+  'button[aria-label*="image"]',
+  'button[aria-label*="Image"]',
+  'button[aria-label*="photo"]',
+  'button[aria-label*="Photo"]',
+  'button[aria-label*="Lens"]',
+  '[role="button"][aria-label*="图片"]',
+  '[role="button"][aria-label*="上传"]',
+  '[role="button"][aria-label*="image"]',
+  '[role="button"][aria-label*="Lens"]',
+];
+
+const IMAGE_FILE_INPUT_SELECTORS = [
+  'input[type="file"][accept*="image"]',
+  'input[type="file"][accept*="png"]',
+  'input[type="file"]',
+];
+
+const IMAGE_ONLY_PROMPT_BY_LANGUAGE: Record<string, string> = {
+  "zh-CN": "请识别并总结这张截图中的关键信息。",
+  "en-US": "Please identify and summarize the key information in this screenshot.",
+  "ja-JP": "このスクリーンショットの重要な情報を要約してください。",
+  "ko-KR": "이 스크린샷의 핵심 정보를 식별하고 요약해 주세요.",
+  "de-DE": "Bitte identifiziere und fasse die wichtigsten Informationen in diesem Screenshot zusammen.",
+  "fr-FR": "Veuillez identifier et résumer les informations clés de cette capture d'écran.",
+};
+
+const DEFAULT_AI_GREETING_PATTERNS = [
+  "想聊点什么",
+  "您好！想聊点什么",
+  "您好!想聊点什么",
+  "what would you like to talk about",
+  "what can i help with",
+  "how can i help",
+  "what's on your mind",
+];
+
 // 需要拦截的资源类型
 const BLOCKED_RESOURCE_TYPES = ["image", "font", "media"];
 
@@ -168,6 +245,22 @@ function releaseCaptchaLock(): void {
 }
 
 export class AISearcher {
+  private static readonly DEFAULT_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+  private static readonly BASE_LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+  ];
+
+  private static readonly HEADED_EXTRA_LAUNCH_ARGS = [
+    "--start-maximized",
+    "--disable-popup-blocking",
+  ];
+
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
@@ -354,6 +447,10 @@ export class AISearcher {
     return `https://www.google.com/search?q=${encodedQuery}&udm=50&hl=${language}`;
   }
 
+  private buildAiModeUrl(language: string): string {
+    return `https://www.google.com/search?udm=50&hl=${language}`;
+  }
+
   /**
    * 获取存储状态文件路径
    */
@@ -398,6 +495,44 @@ export class AISearcher {
 
     console.error("未找到任何认证状态文件");
     return undefined;
+  }
+
+  private buildLaunchOptions(
+    executablePath: string,
+    headless: boolean,
+    proxy?: string
+  ): Parameters<typeof chromium.launch>[0] {
+    const args = [...AISearcher.BASE_LAUNCH_ARGS];
+    if (!headless) {
+      args.push(...AISearcher.HEADED_EXTRA_LAUNCH_ARGS);
+    }
+
+    const launchOptions: Parameters<typeof chromium.launch>[0] = {
+      headless,
+      executablePath,
+      args,
+    };
+
+    if (proxy) {
+      launchOptions.proxy = { server: proxy };
+    }
+
+    return launchOptions;
+  }
+
+  private buildHeadedContextOptions(
+    storageStatePath?: string
+  ): BrowserContextOptions {
+    const contextOptions: BrowserContextOptions = {
+      viewport: null,
+      userAgent: AISearcher.DEFAULT_USER_AGENT,
+    };
+
+    if (storageStatePath && fs.existsSync(storageStatePath)) {
+      contextOptions.storageState = storageStatePath;
+    }
+
+    return contextOptions;
   }
 
   /**
@@ -465,33 +600,22 @@ export class AISearcher {
     try {
       const executablePath = this.findBrowser();
       const proxy = await this.detectProxy();
-
-      const launchArgs = [
-        "--disable-blink-features=AutomationControlled",
-        "--disable-infobars",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-      ];
-
-      const launchOptions: Parameters<typeof chromium.launch>[0] = {
-        headless: this.headless,
-        executablePath,
-        args: launchArgs,
-      };
+      const launchOptions = this.buildLaunchOptions(executablePath, this.headless, proxy);
 
       if (proxy) {
         console.error(`使用代理: ${proxy}`);
-        launchOptions.proxy = { server: proxy };
       }
 
       this.browser = await chromium.launch(launchOptions);
 
       // 创建上下文时加载共享的 storage_state
       const contextOptions: Parameters<Browser["newContext"]>[0] = {
-        viewport: { width: 1920, height: 1080 },
+        viewport: this.headless ? { width: 1920, height: 1080 } : null,
         locale: language,
       };
+      if (!this.headless) {
+        contextOptions.userAgent = AISearcher.DEFAULT_USER_AGENT;
+      }
 
       // 尝试加载共享的认证状态
       const storageStatePath = this.loadStorageState();
@@ -743,13 +867,47 @@ export class AISearcher {
         // 策略4：检查来源链接数量（确保来源已加载）
         const sourceCount = await page.evaluate(`
           (() => {
+            function isGoogleHost(hostname) {
+              const host = (hostname || "").toLowerCase();
+              return host.includes('google.') || host.includes('gstatic.com') || host.includes('googleapis.com');
+            }
+
+            function normalizeLink(rawHref) {
+              if (!rawHref) return '';
+              try {
+                const parsed = new URL(rawHref);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                  return '';
+                }
+
+                if (isGoogleHost(parsed.hostname)) {
+                  const redirect = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+                  if (!redirect) return '';
+                  const target = new URL(redirect);
+                  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+                    return '';
+                  }
+                  if (isGoogleHost(target.hostname)) {
+                    return '';
+                  }
+                  return target.href;
+                }
+
+                return parsed.href;
+              } catch {
+                return '';
+              }
+            }
+
             const aiContainer = document.querySelector('div[data-subtree="aimc"]');
             if (!aiContainer) return 0;
             const links = aiContainer.querySelectorAll('a[href^="http"]');
+            const seen = new Set();
             let count = 0;
             links.forEach(link => {
-              const href = link.href;
-              if (!href.includes('google.') && !href.includes('gstatic.com') && !href.includes('googleapis.com')) {
+              const href = normalizeLink(link.href);
+              if (href && !seen.has(href)) {
+                seen.add(href);
                 count++;
               }
             });
@@ -943,6 +1101,26 @@ export class AISearcher {
         return cleaned.trim();
       }
       
+      // 优先从 AI 容器提取，避免只截到页面顶部欢迎语
+      const candidateSelectors = [
+        'div[data-subtree="aimc"]',
+        'div[data-attrid="wa:/m/0"]',
+        '[data-async-type="editableDirectAnswer"]',
+        '.wDYxhc',
+      ];
+      let containerAnswer = '';
+      for (const selector of candidateSelectors) {
+        const nodes = document.querySelectorAll(selector);
+        for (const node of nodes) {
+          const raw = (node && ((node.innerText || node.textContent || ''))) || '';
+          if (!raw || raw.trim().length === 0) continue;
+          const cleaned = cleanAnswer(raw);
+          if (cleaned.length > containerAnswer.length) {
+            containerAnswer = cleaned;
+          }
+        }
+      }
+
       // 查找 AI 回答区域的起始位置
       let aiModeIndex = -1;
       for (const label of aiModeLabels) {
@@ -963,33 +1141,73 @@ export class AISearcher {
           }
         }
       }
-      
+
+      let fallbackAnswer = '';
       if (aiModeIndex !== -1 && searchResultIndex !== -1) {
-        result.aiAnswer = cleanAnswer(mainContent.substring(aiModeIndex, searchResultIndex));
+        fallbackAnswer = cleanAnswer(mainContent.substring(aiModeIndex, searchResultIndex));
       } else if (aiModeIndex !== -1) {
         const endIndex = findEndIndex(aiModeIndex + 100);
-        result.aiAnswer = cleanAnswer(mainContent.substring(aiModeIndex, endIndex));
+        fallbackAnswer = cleanAnswer(mainContent.substring(aiModeIndex, endIndex));
       } else {
         const endIndex = findEndIndex(100);
-        result.aiAnswer = cleanAnswer(mainContent.substring(0, endIndex));
+        fallbackAnswer = cleanAnswer(mainContent.substring(0, endIndex));
       }
+
+      result.aiAnswer =
+        containerAnswer.length >= 40
+          ? containerAnswer
+          : (containerAnswer.length > fallbackAnswer.length ? containerAnswer : fallbackAnswer);
       
       // 提取来源链接（从 AI 模式容器中提取）
       const aiContainer = document.querySelector('div[data-subtree="aimc"]');
       const linkContainer = aiContainer || document;
       const links = linkContainer.querySelectorAll('a[href^="http"]');
       const seenUrls = new Set();
+
+      function isGoogleHost(hostname) {
+        const host = (hostname || '').toLowerCase();
+        return (
+          host.includes('google.') ||
+          host.includes('gstatic.com') ||
+          host.includes('googleapis.com')
+        );
+      }
+
+      function resolveSourceHref(rawHref) {
+        if (!rawHref) return '';
+        try {
+          const parsed = new URL(rawHref);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return '';
+          }
+
+          if (isGoogleHost(parsed.hostname)) {
+            const redirect = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+            if (!redirect) return '';
+
+            const target = new URL(redirect);
+            if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+              return '';
+            }
+            if (isGoogleHost(target.hostname)) {
+              return '';
+            }
+            return target.href;
+          }
+
+          return parsed.href;
+        } catch {
+          return '';
+        }
+      }
       
       links.forEach(link => {
-        const href = link.href;
+        const href = resolveSourceHref(link.href);
+        if (!href) {
+          return;
+        }
         
-        // 过滤 Google 自身的链接（包括所有 google 域名）
-        if (href.includes('google.') || 
-            href.includes('accounts.google') ||
-            href.includes('support.google') ||
-            href.includes('gstatic.com') ||
-            href.includes('googleapis.com') ||
-            seenUrls.has(href)) {
+        if (seenUrls.has(href)) {
           return;
         }
         
@@ -1118,34 +1336,18 @@ export class AISearcher {
       const executablePath = this.findBrowser();
       log("CAPTCHA", `使用浏览器: ${executablePath}`);
       const proxy = await this.detectProxy();
-
-      const launchOptions: Parameters<typeof chromium.launch>[0] = {
-        headless: false, // 必须显示窗口让用户操作
-        executablePath,
-        args: [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-infobars",
-          "--no-sandbox",
-        ],
-      };
+      const launchOptions = this.buildLaunchOptions(executablePath, false, proxy);
 
       if (proxy) {
         log("CAPTCHA", `使用代理: ${proxy}`);
-        launchOptions.proxy = { server: proxy };
       }
 
       const browser = await chromium.launch(launchOptions);
       log("CAPTCHA", "浏览器已启动");
 
       const storageStatePath = this.getStorageStatePath();
-      const contextOptions: Parameters<Browser["newContext"]>[0] = {
-        viewport: { width: 1280, height: 800 },
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      };
-
-      if (fs.existsSync(storageStatePath)) {
-        contextOptions.storageState = storageStatePath;
+      const contextOptions = this.buildHeadedContextOptions(storageStatePath);
+      if (contextOptions.storageState) {
         log("CAPTCHA", `加载已有认证状态: ${storageStatePath}`);
       }
 
@@ -1378,6 +1580,271 @@ export class AISearcher {
     }
   }
 
+  private async findPromptInput(): Promise<any | null> {
+    if (!this.page) return null;
+
+    for (const selector of PROMPT_INPUT_SELECTORS) {
+      try {
+        const elements = await this.page.$$(selector);
+        for (const element of elements) {
+          if (await element.isVisible()) {
+            return element;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private async clickPromptSubmitButton(): Promise<boolean> {
+    if (!this.page) return false;
+
+    for (const selector of PROMPT_SUBMIT_BUTTON_SELECTORS) {
+      try {
+        const buttons = await this.page.$$(selector);
+        for (const button of buttons) {
+          if (!(await button.isVisible())) {
+            continue;
+          }
+          await button.click();
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
+  private async submitPrompt(query: string): Promise<boolean> {
+    if (!this.page) return false;
+    const trimmed = query.trim();
+    if (!trimmed) return false;
+
+    const input = await this.findPromptInput();
+    if (input) {
+      try {
+        await input.click();
+        await this.page.waitForTimeout(200);
+        await input.fill(trimmed);
+        await this.page.waitForTimeout(200);
+        await input.press("Enter");
+        await this.page.waitForTimeout(250);
+        try {
+          if (typeof input.inputValue === "function") {
+            const remaining = (await input.inputValue()) as string;
+            if (remaining.trim().length > 0) {
+              await this.clickPromptSubmitButton();
+            }
+          }
+        } catch {
+          // ignore
+        }
+        return true;
+      } catch {
+        // Try JS fallback.
+      }
+    }
+
+    try {
+      const jsSubmitPrompt = `
+      (text) => {
+        const candidates = document.querySelectorAll("textarea, input[type='text'], input[name='q']");
+        for (const element of candidates) {
+          if (!element || element.offsetParent === null) continue;
+          element.focus();
+          element.value = text;
+          element.dispatchEvent(new Event("input", { bubbles: true }));
+          element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+          return true;
+        }
+        return false;
+      }
+      `;
+      const submitted = await this.page.evaluate(jsSubmitPrompt, trimmed);
+      if (submitted) {
+        return true;
+      }
+      return this.clickPromptSubmitButton();
+    } catch {
+      return this.clickPromptSubmitButton();
+    }
+  }
+
+  private async trySetImageInputFiles(imagePath: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    for (const selector of IMAGE_FILE_INPUT_SELECTORS) {
+      try {
+        const inputs = await this.page.$$(selector);
+        for (const input of inputs) {
+          try {
+            await input.setInputFiles(imagePath);
+            return true;
+          } catch {
+            continue;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
+  private async uploadImageAttachment(imagePath: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        await this.page.waitForTimeout(700);
+      }
+
+      if (await this.trySetImageInputFiles(imagePath)) {
+        return true;
+      }
+
+      for (const selector of IMAGE_UPLOAD_TRIGGER_SELECTORS) {
+        try {
+          const triggers = await this.page.$$(selector);
+          for (const trigger of triggers) {
+            if (!(await trigger.isVisible())) {
+              continue;
+            }
+
+            await trigger.click();
+            await this.page.waitForTimeout(400);
+
+            if (await this.trySetImageInputFiles(imagePath)) {
+              return true;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private normalizeAnswerText(text: string): string {
+    return text.replace(/\s+/g, "").trim().toLowerCase();
+  }
+
+  private isDefaultGreetingAnswer(answer: string): boolean {
+    const normalized = this.normalizeAnswerText(answer);
+    if (!normalized) return true;
+    return DEFAULT_AI_GREETING_PATTERNS.some((pattern) =>
+      normalized.includes(this.normalizeAnswerText(pattern))
+    );
+  }
+
+  private isPlaceholderImageAnswer(answer: string, baselineAnswer: string): boolean {
+    const trimmed = answer.trim();
+    if (!trimmed) return true;
+
+    const normalized = this.normalizeAnswerText(trimmed);
+    if (baselineAnswer && normalized === this.normalizeAnswerText(baselineAnswer)) {
+      return true;
+    }
+
+    if (trimmed.length <= 80 && this.isDefaultGreetingAnswer(trimmed)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async waitForImageGenerationStart(
+    page: Page,
+    baselineAnswer: string,
+    maxWaitSeconds: number = 6
+  ): Promise<boolean> {
+    for (let i = 0; i < maxWaitSeconds; i++) {
+      await page.waitForTimeout(1000);
+      const extracted = await this.extractAiAnswer(page);
+      if (
+        extracted.success &&
+        !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer)
+      ) {
+        console.error(`检测到图片回答开始生成（第 ${i + 1} 秒）`);
+        return true;
+      }
+
+      if (await this.checkLoadingIndicators(page)) {
+        console.error(`检测到图片回答加载指示器（第 ${i + 1} 秒）`);
+        return true;
+      }
+
+      try {
+        const content = (await page.evaluate("document.body.innerText")) as string;
+        if (AI_LOADING_KEYWORDS.some((kw) => content.includes(kw))) {
+          console.error(`检测到图片回答加载关键词（第 ${i + 1} 秒）`);
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
+  private async submitImagePromptWithFallback(
+    prompt: string,
+    baselineAnswer: string
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    const submitted = await this.submitPrompt(prompt);
+    if (!submitted) {
+      console.error("主输入框提交失败，尝试使用追问输入框提交图片提示词");
+      return this.submitFollowUpViaJs(prompt);
+    }
+
+    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 6)) {
+      return true;
+    }
+
+    console.error("首次提交后未检测到生成迹象，尝试追问输入框二次提交...");
+    if (!(await this.submitFollowUpViaJs(prompt))) {
+      return true;
+    }
+
+    await this.page.waitForTimeout(600);
+    await this.waitForAiContent(this.page);
+    return true;
+  }
+
+  private async waitForMeaningfulImageAnswer(
+    page: Page,
+    baselineAnswer: string,
+    maxWaitSeconds: number = 12
+  ): Promise<SearchResult | null> {
+    for (let i = 0; i < maxWaitSeconds; i++) {
+      await page.waitForTimeout(1000);
+      const extracted = await this.extractAiAnswer(page);
+      if (
+        extracted.success &&
+        !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer)
+      ) {
+        console.error(
+          `检测到有效图片回答（第 ${i + 1} 秒），长度: ${extracted.aiAnswer.length}`
+        );
+        return extracted;
+      }
+    }
+
+    return null;
+  }
+
   /**
    * 从内容中移除用户问题
    */
@@ -1410,20 +1877,43 @@ export class AISearcher {
    */
   async search(
     query: string,
-    language: string = "zh-CN"
+    language: string = "zh-CN",
+    imagePath?: string
   ): Promise<SearchResult> {
+    const normalizedQuery = query.trim();
+    const normalizedImagePath = imagePath?.trim() || undefined;
+    const hasImageInput = Boolean(normalizedImagePath);
+    const imageOnlyPrompt =
+      IMAGE_ONLY_PROMPT_BY_LANGUAGE[language] || IMAGE_ONLY_PROMPT_BY_LANGUAGE["en-US"];
+    const effectivePrompt = normalizedQuery || imageOnlyPrompt;
+
     console.error("=".repeat(60));
-    console.error(`开始搜索: query='${query}', language=${language}`);
+    console.error(
+      `开始搜索: query='${normalizedQuery}', language=${language}, image=${hasImageInput ? normalizedImagePath : "none"}`
+    );
 
     this.lastActivityTime = Date.now();
 
     const result: SearchResult = {
       success: false,
-      query,
+      query: normalizedQuery,
       aiAnswer: "",
       sources: [],
       error: "",
     };
+    if (hasImageInput && !normalizedQuery) {
+      result.query = effectivePrompt;
+    }
+
+    if (!normalizedQuery && !normalizedImagePath) {
+      result.error = "缺少查询内容，请至少提供文本问题或图片路径";
+      return result;
+    }
+
+    if (normalizedImagePath && !fs.existsSync(normalizedImagePath)) {
+      result.error = `图片文件不存在: ${normalizedImagePath}`;
+      return result;
+    }
 
     try {
       // 确保会话
@@ -1438,7 +1928,9 @@ export class AISearcher {
       }
 
       // 导航到搜索页面
-      const url = this.buildUrl(query, language);
+      const url = hasImageInput
+        ? this.buildAiModeUrl(language)
+        : this.buildUrl(normalizedQuery, language);
       console.error(`导航到: ${url}`);
 
       try {
@@ -1448,7 +1940,11 @@ export class AISearcher {
         });
       } catch (gotoError) {
         console.error(`页面导航异常: ${gotoError}`);
-        return await this.handleCaptcha(url, query);
+        if (hasImageInput) {
+          result.error = "图片搜索前页面加载失败，请检查网络后重试。";
+          return result;
+        }
+        return await this.handleCaptcha(url, effectivePrompt);
       }
 
       // 等待 AI 内容加载
@@ -1460,24 +1956,96 @@ export class AISearcher {
       )) as string;
       if (this.isCaptchaPage(content)) {
         console.error("检测到验证码页面！");
-        return await this.handleCaptcha(url, query);
+        if (hasImageInput) {
+          const captchaResult = await this.handleCaptcha(url, effectivePrompt);
+          if (captchaResult.success) {
+            result.error = "验证已完成，请重试当前图片搜索。";
+            return result;
+          }
+          return captchaResult;
+        }
+        return await this.handleCaptcha(url, effectivePrompt);
+      }
+
+      let baselineAiAnswer = "";
+      if (hasImageInput) {
+        const baselineResult = await this.extractAiAnswer(this.page);
+        baselineAiAnswer = baselineResult.aiAnswer || "";
+        if (baselineAiAnswer) {
+          console.error(`图片模式基线回答长度: ${baselineAiAnswer.length}`);
+        }
+      }
+
+      if (normalizedImagePath) {
+        const absoluteImagePath = path.resolve(normalizedImagePath);
+        const uploaded = await this.uploadImageAttachment(absoluteImagePath);
+        if (!uploaded) {
+          result.error = "未找到可用的图片上传入口（可能是页面未就绪或 Google 页面结构变更）。";
+          return result;
+        }
+        console.error(`图片上传成功: ${absoluteImagePath}`);
+
+        const submitted = await this.submitImagePromptWithFallback(
+          effectivePrompt,
+          baselineAiAnswer
+        );
+        if (!submitted) {
+          console.error("未找到可用输入框提交提示词，等待页面自动处理图片");
+        } else {
+          console.error(`已提交图片提示词: ${effectivePrompt}`);
+          result.query = effectivePrompt;
+        }
+
+        await this.page.waitForTimeout(1000);
+        await this.waitForAiContent(this.page);
       }
 
       // 等待 AI 输出完成（优先保证在调用方 deadline 内返回）
-      await this.waitForStreamingComplete(this.page, 10);
+      const streamWaitSeconds = hasImageInput ? 22 : 10;
+      await this.waitForStreamingComplete(this.page, streamWaitSeconds);
 
       // 短暂等待来源链接渲染（最佳努力，不阻塞过久）
       console.error("短暂等待来源链接渲染（最多2秒）...");
       try {
         await this.page.waitForFunction(
           `(() => {
+            function isGoogleHost(hostname) {
+              const host = (hostname || "").toLowerCase();
+              return host.includes('google.') || host.includes('gstatic.com') || host.includes('googleapis.com');
+            }
+            function normalizeLink(rawHref) {
+              if (!rawHref) return '';
+              try {
+                const parsed = new URL(rawHref);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                  return '';
+                }
+                if (isGoogleHost(parsed.hostname)) {
+                  const redirect = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+                  if (!redirect) return '';
+                  const target = new URL(redirect);
+                  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+                    return '';
+                  }
+                  if (isGoogleHost(target.hostname)) {
+                    return '';
+                  }
+                  return target.href;
+                }
+                return parsed.href;
+              } catch {
+                return '';
+              }
+            }
             const aiContainer = document.querySelector('div[data-subtree="aimc"]');
             if (!aiContainer) return false;
             const links = aiContainer.querySelectorAll('a[href^="http"]');
+            const seen = new Set();
             let nonGoogleCount = 0;
             links.forEach(link => {
-              const href = link.href;
-              if (!href.includes('google.') && !href.includes('gstatic.com')) {
+              const href = normalizeLink(link.href);
+              if (href && !seen.has(href)) {
+                seen.add(href);
                 nonGoogleCount++;
               }
             });
@@ -1492,14 +2060,39 @@ export class AISearcher {
       }
 
       // 提取内容
-      const extractedResult = await this.extractAiAnswer(this.page);
+      let extractedResult = await this.extractAiAnswer(this.page);
+      if (
+        hasImageInput &&
+        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer)
+      ) {
+        console.error("检测到图片模式仍为欢迎语/占位内容，继续等待真实回答...");
+        const meaningfulResult = await this.waitForMeaningfulImageAnswer(
+          this.page,
+          baselineAiAnswer,
+          16
+        );
+        if (meaningfulResult) {
+          extractedResult = meaningfulResult;
+        }
+      }
       result.aiAnswer = extractedResult.aiAnswer;
       result.sources = extractedResult.sources;
       result.success = result.aiAnswer.length > 0;
 
+      if (
+        hasImageInput &&
+        this.isPlaceholderImageAnswer(result.aiAnswer, baselineAiAnswer)
+      ) {
+        result.success = false;
+        result.error = "未获取到图片分析结果（页面仍停留在欢迎语），请重试。";
+      }
+
       // 如果没有提取到内容，设置错误信息
       if (!result.success) {
-        result.error = extractedResult.error || "未能提取到 AI 回答内容，可能需要登录 Google 账户";
+        result.error =
+          result.error ||
+          extractedResult.error ||
+          "未能提取到 AI 回答内容，可能需要登录 Google 账户";
       }
 
       // 保存回答用于增量提取
@@ -1691,22 +2284,10 @@ export class AISearcher {
     try {
       const executablePath = this.findBrowser();
       const proxy = await this.detectProxy();
-
-      const launchOptions: Parameters<typeof chromium.launch>[0] = {
-        headless: false, // 必须显示窗口让用户操作
-        executablePath,
-        args: [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-infobars",
-          "--no-sandbox",
-          "--start-maximized",
-          "--disable-popup-blocking",
-        ],
-      };
+      const launchOptions = this.buildLaunchOptions(executablePath, false, proxy);
 
       if (proxy) {
         console.error(`使用代理: ${proxy}`);
-        launchOptions.proxy = { server: proxy };
       }
 
       const browser = await chromium.launch(launchOptions);
@@ -1722,15 +2303,11 @@ export class AISearcher {
         console.error(`创建共享目录: ${sharedDir}`);
       }
       
-      const contextOptions: Parameters<Browser["newContext"]>[0] = {
-        viewport: { width: 1280, height: 900 },
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      };
+      const contextOptions = this.buildHeadedContextOptions(storageStatePath);
 
       // 如果有旧的认证状态，加载它
-      if (fs.existsSync(storageStatePath)) {
-        contextOptions.storageState = storageStatePath;
+      if (contextOptions.storageState) {
+        console.error(`加载已有认证状态: ${storageStatePath}`);
       }
 
       const context = await browser.newContext(contextOptions);

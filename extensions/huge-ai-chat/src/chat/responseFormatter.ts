@@ -12,18 +12,27 @@ const AUTH_KEYWORDS = [
 const ERROR_PATTERNS = [/##\s*(?:❌\s*)?搜索失败/i, /搜索执行异常/i, /搜索失败/i];
 const DEBUG_BLOCK_START = ":::huge_ai_chat_debug_start:::";
 const DEBUG_BLOCK_END = ":::huge_ai_chat_debug_end:::";
+const NO_RECORD_PATTERNS = [
+  "该词条在当前技术语料库和实时搜索中无记录",
+  "该词条在当前技术语料库和实时搜索中无可验证记录",
+];
+
+function isSuccessResultEnvelope(text: string): boolean {
+  return /^##\s*AI\s*(?:搜索|追问)结果/i.test((text || "").trimStart());
+}
 
 function normalizeLineEndings(text: string): string {
   return text.replace(/\r\n/g, "\n").trim();
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function escapeMarkdownLinkText(text: string): string {
+  return (text || "")
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .trim();
 }
 
 function extractSessionId(raw: string): string | undefined {
@@ -167,12 +176,31 @@ function normalizeErrorBody(raw: string): string {
 }
 
 export function isAuthRelatedError(text: string): boolean {
-  const lower = text.toLowerCase();
+  const normalized = normalizeLineEndings(text || "");
+  if (!normalized) {
+    return false;
+  }
+
+  // Treat known MCP success envelopes as non-auth failures even if answer/debug text
+  // contains words like "登录" or "验证码".
+  if (isSuccessResultEnvelope(normalized)) {
+    return false;
+  }
+
+  const lower = normalized.toLowerCase();
   return AUTH_KEYWORDS.some((keyword) => lower.includes(keyword.toLowerCase()));
 }
 
 export function isSearchFailureText(text: string): boolean {
   return ERROR_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function isNoRecordResponseText(text: string): boolean {
+  const normalized = (text || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return NO_RECORD_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
 export function parseSearchToolText(rawText: string): ParsedSearchResponse {
@@ -194,7 +222,10 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
   }
 
   const answer = extractAnswer(raw);
-  const sources = mergeSources(extractSources(raw), extractFallbackSources(raw));
+  const isNoRecord = isNoRecordResponseText(answer) || isNoRecordResponseText(raw);
+  const sources = isNoRecord
+    ? []
+    : mergeSources(extractSources(raw), extractFallbackSources(raw));
   const debugText = extractDebugSection(raw);
   const sessionId = extractSessionId(raw);
 
@@ -202,7 +233,11 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
   chunks.push(answer);
 
   if (sources.length > 0) {
-    const sourceLines = sources.map((source, index) => `${index + 1}. [${source.title}](${source.url})`);
+    const sourceLines = sources.map((source, index) => {
+      const safeTitle = escapeMarkdownLinkText(source.title || guessTitleFromUrl(source.url));
+      // Wrap URL with <> to avoid markdown parsing breaks on parentheses/long fragments.
+      return `${index + 1}. [${safeTitle}](<${source.url}>)`;
+    });
     chunks.push(["### 来源", ...sourceLines].join("\n"));
   }
 

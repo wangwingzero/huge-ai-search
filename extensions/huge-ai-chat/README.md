@@ -7,10 +7,14 @@
 - 独立 Webview 聊天窗口（无需打开浏览器页面提问）
 - 复用现有 MCP `search` 工具能力
 - 线程化会话（支持追问上下文）
+- 编辑器选中代码后可一键发送到 Huge（右键菜单 + 编辑器顶部按钮）
+- 发送前会弹出可编辑确认框，默认填充选中文本，确认后新开线程并发送
 - 历史记录持久化到 VS Code `globalState`
 - 验证异常自动触发 `huge-ai-search-setup`
 - 回答中的来源链接可点击，直接在系统浏览器打开核实
 - 顶部 `History` 按钮查看历史会话，支持关键词搜索与快速切换
+- 输入框支持 `Ctrl+V` 直接粘贴截图并预览
+- 多张截图发送时会自动拼接合并为单张图片上传（适配当前单图输入能力）
 
 ## 命令
 
@@ -18,6 +22,7 @@
 - `Huge AI Chat: New Thread`
 - `Huge AI Chat: Run Login Setup`
 - `Huge AI Chat: Clear History`
+- `Huge AI Chat: 发送到 Huge`
 
 ## 配置
 
@@ -27,6 +32,19 @@
 - `hugeAiChat.mcp.args`
 - `hugeAiChat.mcp.cwd`
 - `hugeAiChat.mcp.env`
+
+示例：通过 `hugeAiChat.mcp.env` 透传严格防幻觉策略到 MCP 子进程
+
+```json
+{
+  "hugeAiChat.mcp.env": {
+    "HUGE_AI_SEARCH_STRICT_GROUNDING": "1",
+    "HUGE_AI_SEARCH_GUARDRAIL_PROMPT": "[HUGE_AI_GUARDRAIL_V1]\n当用户询问技术词条时，先检索官方文档与官方仓库；若无可验证权威来源，直接回答“该词条在当前技术语料库和实时搜索中无可验证记录。”"
+  }
+}
+```
+
+> 语义说明：拒答表示“当前未检索到可验证权威来源”，不等于“绝对不存在”。
 
 ## 本地开发
 

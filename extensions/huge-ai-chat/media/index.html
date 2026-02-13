@@ -21,6 +21,16 @@
       </div>
       <div class="right-actions">
         <button
+          id="statusToggleBtn"
+          class="btn icon-btn status-toggle status-idle"
+          aria-label="状态详情"
+          aria-pressed="false"
+          title="状态详情（点击展开）"
+          data-tooltip="状态详情（点击展开）"
+        >
+          <span class="status-toggle-dot" aria-hidden="true"></span>
+        </button>
+        <button
           id="openBrowserBtn"
           class="btn icon-btn"
           aria-label="浏览器查看"
@@ -43,6 +53,13 @@
           title="复制会话"
           data-tooltip="复制会话"
         >⧉</button>
+        <button
+          id="exportThreadBtn"
+          class="btn icon-btn"
+          aria-label="导出 Markdown"
+          title="导出 Markdown"
+          data-tooltip="导出 Markdown"
+        >⤓</button>
         <button
           id="clearHistoryBtn"
           class="btn icon-btn danger"
@@ -75,7 +92,7 @@
           </div>
         </div>
 
-        <div id="statusBar" class="status-bar status-idle" role="status" aria-live="polite">
+        <div id="statusBar" class="status-bar status-idle hidden" role="status" aria-live="polite">
           <div class="status-head">
             <span id="statusDot" class="status-dot" aria-hidden="true"></span>
             <span id="statusTitle" class="status-title">系统就绪</span>
@@ -88,8 +105,17 @@
         <div id="messages" class="messages"></div>
 
         <div class="composer">
-          <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
-          <button id="sendBtn" class="btn primary">Send</button>
+          <div id="attachmentBar" class="attachment-bar hidden">
+            <div class="attachment-head">
+              <span id="attachmentSummary"></span>
+              <button id="clearAttachmentsBtn" type="button" class="mini-btn">清除图片</button>
+            </div>
+            <div id="attachmentList" class="attachment-list"></div>
+          </div>
+          <div class="composer-row">
+            <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+            <button id="sendBtn" class="btn primary">Send</button>
+          </div>
         </div>
       </section>
     </main>

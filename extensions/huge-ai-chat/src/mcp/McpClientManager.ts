@@ -14,6 +14,7 @@ export interface SearchToolArgs {
   language: SearchLanguage;
   follow_up: boolean;
   session_id?: string;
+  image_path?: string;
 }
 
 export interface McpWarmupResult {
