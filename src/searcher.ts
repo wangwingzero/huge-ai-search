@@ -2506,7 +2506,7 @@ export class AISearcher {
   }
 
   private shouldUseNodriverImageSearch(): boolean {
-    const driver = (process.env.HUGE_AI_SEARCH_IMAGE_DRIVER || "nodriver")
+    const driver = (process.env.HUGE_AI_SEARCH_IMAGE_DRIVER || "playwright")
       .trim()
       .toLowerCase();
     return driver === "nodriver";
