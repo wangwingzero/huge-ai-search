@@ -412,10 +412,12 @@ const GLOBAL_SLOT_LEASE_MS = 180000;
 const GLOBAL_SLOT_HEARTBEAT_MS = 3000;
 const GLOBAL_SLOT_RETRY_BASE_MS = 120;
 const GLOBAL_SLOT_RETRY_MAX_MS = 800;
-const REQUEST_TOTAL_BUDGET_MS = 55000;
+const REQUEST_TOTAL_BUDGET_TEXT_MS = 55000;
+const REQUEST_TOTAL_BUDGET_IMAGE_MS = 80000;
 const REQUEST_BUDGET_SAFETY_MS = 3000;
 const REQUEST_MIN_EXECUTION_MS = 8000;
-const SEARCH_EXECUTION_TIMEOUT_MS = 50000;
+const SEARCH_EXECUTION_TIMEOUT_TEXT_MS = 50000;
+const SEARCH_EXECUTION_TIMEOUT_IMAGE_MS = 75000;
 const SEARCHER_NAV_TIMEOUT_SECONDS = 30;
 const MAX_SESSIONS = 5; // 最大会话数
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟超时
@@ -687,7 +689,7 @@ server.tool(
     image_path: z
       .string()
       .optional()
-      .describe("可选。要上传到 Google AI 的本地图片绝对路径（当前单图输入）"),
+      .describe("可选。要上传到 HUGE AI 的本地图片绝对路径（当前单图输入）"),
   },
   async (args) => {
     const { query, language, follow_up, session_id, image_path } = args;
@@ -721,7 +723,7 @@ server.tool(
             {
               type: "text" as const,
               text:
-                `⏸️ Google AI 搜索暂时不可用\n\n` +
+                `⏸️ HUGE AI 搜索暂时不可用\n\n` +
                 `上次搜索需要用户登录验证但超时未完成（可能用户不在电脑前）。\n` +
                 `冷却剩余: ${remainingMin} 分 ${remaining % 60} 秒\n\n` +
                 `**建议**: 如果这是新的对话，用户可能已经回来了，可以告知用户手动触发重试。\n` +
@@ -739,6 +741,13 @@ server.tool(
     let localSlotAcquired = false;
     let globalLease: GlobalLease | null = null;
     let strictNoRecordTriggered = false;
+    let activeSessionId: string | null = null;
+    const requestTotalBudgetMs = hasImageInput
+      ? REQUEST_TOTAL_BUDGET_IMAGE_MS
+      : REQUEST_TOTAL_BUDGET_TEXT_MS;
+    const searchExecutionTimeoutMs = hasImageInput
+      ? SEARCH_EXECUTION_TIMEOUT_IMAGE_MS
+      : SEARCH_EXECUTION_TIMEOUT_TEXT_MS;
 
     try {
       // 检查是否有 CAPTCHA 正在处理
@@ -804,9 +813,10 @@ server.tool(
         : defaultSessionId && sessions.has(defaultSessionId)
           ? defaultSessionId
           : undefined;
-      const { sessionId: activeSessionId, session } = await getOrCreateSession(preferredSessionId);
+      const { sessionId: allocatedSessionId, session } = await getOrCreateSession(preferredSessionId);
+      activeSessionId = allocatedSessionId;
       if (!requestFollowUp) {
-        defaultSessionId = activeSessionId;
+        defaultSessionId = allocatedSessionId;
       }
 
       const searcherInstance = session.searcher;
@@ -814,7 +824,7 @@ server.tool(
 
       const elapsedBeforeExecutionMs = Date.now() - requestStartMs;
       const remainingBudgetMs =
-        REQUEST_TOTAL_BUDGET_MS - elapsedBeforeExecutionMs - REQUEST_BUDGET_SAFETY_MS;
+        requestTotalBudgetMs - elapsedBeforeExecutionMs - REQUEST_BUDGET_SAFETY_MS;
       if (remainingBudgetMs < REQUEST_MIN_EXECUTION_MS) {
         console.error(
           `请求预算不足，已耗时 ${elapsedBeforeExecutionMs}ms，剩余预算 ${remainingBudgetMs}ms`
@@ -832,11 +842,11 @@ server.tool(
       }
 
       const executionTimeoutMs = Math.min(
-        SEARCH_EXECUTION_TIMEOUT_MS,
+        searchExecutionTimeoutMs,
         remainingBudgetMs
       );
       console.error(
-        `执行预算: queue=${elapsedBeforeExecutionMs}ms, execution<=${executionTimeoutMs}ms, total<=${REQUEST_TOTAL_BUDGET_MS}ms`
+        `执行预算: queue=${elapsedBeforeExecutionMs}ms, execution<=${executionTimeoutMs}ms, total<=${requestTotalBudgetMs}ms`
       );
 
       // 设置执行超时（受总预算约束）
@@ -849,7 +859,7 @@ server.tool(
       let searchPromise: Promise<SearchResult>;
 
       if (requestFollowUp && searcherInstance.hasActiveSession()) {
-        console.error(`使用追问模式（会话: ${activeSessionId}）`);
+        console.error(`使用追问模式（会话: ${allocatedSessionId}）`);
         searchPromise = searcherInstance.continueConversation(normalizedQuery);
       } else {
         if (requestFollowUp && !searcherInstance.hasActiveSession()) {
@@ -861,18 +871,58 @@ server.tool(
         if (guardedQuery !== normalizedQuery) {
           console.error("已对技术词条查询注入防幻觉提示词");
         }
-        console.error(`执行新搜索（会话: ${activeSessionId}）`);
+        console.error(`执行新搜索（会话: ${allocatedSessionId}）`);
         searchPromise = searcherInstance.search(guardedQuery, language, normalizedImagePath);
       }
 
-      const result = await Promise.race([searchPromise, timeoutPromise]);
+      let result = await Promise.race([searchPromise, timeoutPromise]);
       if (result.success) {
         result.query = normalizedQuery;
         result.aiAnswer = stripGuardrailPrompt(result.aiAnswer);
         if (shouldForceNoRecord(normalizedQuery, result, requestFollowUp, hasImageInput)) {
-          forceNoRecordResult(result);
-          strictNoRecordTriggered = true;
-          log("INFO", `命中严格防幻觉策略，已强制返回拒答文案: query='${normalizedQuery}'`);
+          // The guardrail prompt may have caused Google AI to self-censor a
+          // legitimate term.  Retry once WITHOUT the guardrail so real terms
+          // (Zustand, Vite …) can still get a substantive answer.
+          if (guardedQuery !== normalizedQuery) {
+            const retryBudgetMs =
+              requestTotalBudgetMs - (Date.now() - requestStartMs) - REQUEST_BUDGET_SAFETY_MS;
+            if (retryBudgetMs >= REQUEST_MIN_EXECUTION_MS) {
+              log("INFO", `防幻觉触发但查询带 guardrail，去掉 guardrail 重试: query='${normalizedQuery}'`);
+              const unguardedResult = await Promise.race([
+                searcherInstance.search(normalizedQuery, language, normalizedImagePath),
+                new Promise<SearchResult>((_, reject) =>
+                  setTimeout(() => reject(new Error(`去 guardrail 重试超时`)), Math.min(searchExecutionTimeoutMs, retryBudgetMs))
+                ),
+              ]);
+              if (unguardedResult.success) {
+                unguardedResult.query = normalizedQuery;
+                unguardedResult.aiAnswer = stripGuardrailPrompt(unguardedResult.aiAnswer);
+                if (!shouldForceNoRecord(normalizedQuery, unguardedResult, requestFollowUp, hasImageInput)) {
+                  // Unguarded search returned substantive content — use it.
+                  log("INFO", `去 guardrail 重试成功，放行: query='${normalizedQuery}'`);
+                  result = unguardedResult;
+                } else {
+                  // Still no substance — block as intended.
+                  forceNoRecordResult(result);
+                  strictNoRecordTriggered = true;
+                  log("INFO", `去 guardrail 重试仍无实质内容，拦截: query='${normalizedQuery}'`);
+                }
+              } else {
+                // Retry failed — fall back to blocking.
+                forceNoRecordResult(result);
+                strictNoRecordTriggered = true;
+                log("INFO", `去 guardrail 重试失败，拦截: query='${normalizedQuery}'`);
+              }
+            } else {
+              forceNoRecordResult(result);
+              strictNoRecordTriggered = true;
+              log("INFO", `命中严格防幻觉策略（预算不足跳过重试），拦截: query='${normalizedQuery}'`);
+            }
+          } else {
+            forceNoRecordResult(result);
+            strictNoRecordTriggered = true;
+            log("INFO", `命中严格防幻觉策略，已强制返回拒答文案: query='${normalizedQuery}'`);
+          }
         }
       }
 
@@ -890,7 +940,7 @@ server.tool(
         markCaptchaEnd();
         const elapsedBeforeRetryMs = Date.now() - requestStartMs;
         const retryRemainingMs =
-          REQUEST_TOTAL_BUDGET_MS - elapsedBeforeRetryMs - REQUEST_BUDGET_SAFETY_MS;
+          requestTotalBudgetMs - elapsedBeforeRetryMs - REQUEST_BUDGET_SAFETY_MS;
         if (retryRemainingMs < REQUEST_MIN_EXECUTION_MS) {
           return {
             content: [
@@ -901,7 +951,7 @@ server.tool(
             ],
           };
         }
-        const retryTimeoutMs = Math.min(SEARCH_EXECUTION_TIMEOUT_MS, retryRemainingMs);
+        const retryTimeoutMs = Math.min(searchExecutionTimeoutMs, retryRemainingMs);
         const retryResult = await Promise.race([
           searcherInstance.search(guardedQuery, language, normalizedImagePath),
           new Promise<SearchResult>((_, reject) =>
@@ -916,11 +966,11 @@ server.tool(
             strictNoRecordTriggered = true;
             log("INFO", `重试命中严格防幻觉策略，已强制返回拒答文案: query='${normalizedQuery}'`);
           }
-          const output = formatSearchResult(retryResult, requestFollowUp, activeSessionId);
+          const output = formatSearchResult(retryResult, requestFollowUp, allocatedSessionId);
           console.error(`重试搜索成功，返回结果长度: ${output.length}`);
           if (strictNoRecordTriggered && !requestFollowUp) {
-            await closeSession(activeSessionId);
-            console.error(`严格拦截后已重置会话上下文: ${activeSessionId}`);
+            await closeSession(allocatedSessionId);
+            console.error(`严格拦截后已重置会话上下文: ${allocatedSessionId}`);
           }
           return {
             content: [{ type: "text" as const, text: output }],
@@ -1013,11 +1063,11 @@ server.tool(
       // 搜索成功，确保 CAPTCHA 状态已清除
       markCaptchaEnd();
 
-      const output = formatSearchResult(result, requestFollowUp, activeSessionId);
+      const output = formatSearchResult(result, requestFollowUp, allocatedSessionId);
       log("INFO", `搜索成功，返回结果长度: ${output.length}`);
       if (strictNoRecordTriggered && !requestFollowUp) {
-        await closeSession(activeSessionId);
-        console.error(`严格拦截后已重置会话上下文: ${activeSessionId}`);
+        await closeSession(allocatedSessionId);
+        console.error(`严格拦截后已重置会话上下文: ${allocatedSessionId}`);
       }
 
       return {
@@ -1028,6 +1078,19 @@ server.tool(
       markCaptchaEnd();
       const errorMessage =
         error instanceof Error ? error.message : String(error);
+
+      if (
+        activeSessionId &&
+        (errorMessage.includes("搜索超时（") || errorMessage.includes("重试搜索超时（"))
+      ) {
+        try {
+          await closeSession(activeSessionId);
+          console.error(`检测到执行超时，已重置会话: ${activeSessionId}`);
+        } catch (closeError) {
+          console.error(`超时后重置会话失败: ${closeError}`);
+        }
+      }
+
       log("ERROR", `搜索执行异常: ${errorMessage}`);
       return {
         content: [
@@ -1063,7 +1126,7 @@ async function main() {
   log("INFO", `日志目录: ${getLogDir()}（默认保留 ${getLogRetentionDays()} 天）`);
   log(
     "INFO",
-    `均衡配置: local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout=${SEARCH_EXECUTION_TIMEOUT_MS}ms, totalBudget=${REQUEST_TOTAL_BUDGET_MS}ms, globalLockDir=${globalCoordinator.getLockDir()}`
+    `均衡配置: local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout(text/image)=${SEARCH_EXECUTION_TIMEOUT_TEXT_MS}/${SEARCH_EXECUTION_TIMEOUT_IMAGE_MS}ms, totalBudget(text/image)=${REQUEST_TOTAL_BUDGET_TEXT_MS}/${REQUEST_TOTAL_BUDGET_IMAGE_MS}ms, globalLockDir=${globalCoordinator.getLockDir()}`
   );
 }
 
