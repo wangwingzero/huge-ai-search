@@ -1,6 +1,6 @@
 # Huge AI Search MCP Server
 
-🔍 AI 搜索聚合 MCP 服务器 - 获取 Google AI Mode 总结的搜索结果
+🔍 AI 搜索聚合 MCP 服务器 - 获取 HUGE AI Mode 总结的搜索结果
 
 [![NPM Version](https://img.shields.io/npm/v/huge-ai-search?color=red)](https://www.npmjs.com/package/huge-ai-search) [![MIT licensed](https://img.shields.io/npm/l/huge-ai-search)](./LICENSE)
 
@@ -22,7 +22,17 @@
 
 验证状态会自动保存，后续搜索无需重复验证。
 
-### 3. 首次设置（推荐）
+### 3. Python + nodriver（推荐）
+
+为降低 Google 对自动化浏览器的风险识别，登录/验证码流程默认优先使用 `nodriver`。
+图片搜索（`image_path`）同样默认优先走 `nodriver`，失败时自动回退 Playwright。
+
+- 安装 Python 3.10+
+- 安装 nodriver：`pip install nodriver>=0.48.1`
+
+若本机没有可用的 Python/nodriver，会自动回退到 Playwright 流程。
+
+### 4. 首次设置（推荐）
 
 配置完 MCP 后，建议先运行一次设置命令完成 Google 账号登录：
 
@@ -34,7 +44,7 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 
 登录状态会自动保存，后续使用无需重复登录。
 
-### 4. 代理设置（中国大陆用户）
+### 5. 代理设置（中国大陆用户）
 
 如果你在中国大陆，需要配置代理才能访问 Google：
 
@@ -45,7 +55,7 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 
 ## 特性
 
-- 🤖 **AI 总结** - 获取 Google AI Mode 的搜索结果，而非原始网页
+- 🤖 **AI 总结** - 获取 HUGE AI Mode 的搜索结果，而非原始网页
 - 🔄 **追问对话** - 支持在同一会话中追问，获取更深入的答案
 - 🌐 **多语言支持** - 支持中文、英文、日文、韩文等
 - 🔐 **验证码处理** - 检测到验证码时自动弹出浏览器窗口
@@ -382,6 +392,24 @@ A: 需要配置代理访问 Google。工具会先自动检测常见本地代理�
 
 A: 在弹出的浏览器窗口中完成验证，验证成功后会自动继续搜索。
 
+### Q: 为什么提示 nodriver 启动失败？
+
+A: 请先确认 Python 和 nodriver 可用：
+
+```bash
+python --version
+python -m pip install -U nodriver>=0.48.1
+```
+
+可选环境变量：
+
+- `HUGE_AI_SEARCH_AUTH_DRIVER=playwright`：禁用 nodriver，强制走 Playwright 验证流程
+- `HUGE_AI_SEARCH_IMAGE_DRIVER=playwright`：禁用 nodriver 图片搜索，强制走 Playwright 图片流程
+- `HUGE_AI_SEARCH_NODRIVER_PYTHON=/path/to/python`：指定 Python 可执行文件
+- `HUGE_AI_SEARCH_NODRIVER_WAIT_SECONDS=300`：nodriver 等待人工验证的超时秒数（30-900）
+- `HUGE_AI_SEARCH_NODRIVER_IMAGE_TIMEOUT_SECONDS=85`：nodriver 图片搜索等待 AI 输出超时秒数（25-300）
+- `HUGE_AI_SEARCH_NODRIVER_HEADLESS=1`：让 nodriver 使用 headless（默认 `0`，更利于规避风控）
+
 ### Q: 登录状态保存在哪里？
 
 A: 保存在用户目录下的 `~/.huge-ai-search/browser_data/` 文件夹中。
@@ -430,7 +458,8 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 
 - **Runtime**: Node.js 18+
 - **Language**: TypeScript
-- **Browser**: Microsoft Edge (via Playwright)
+- **Auth Browser**: nodriver（默认）/ Playwright（回退）
+- **Search Engine**: Microsoft Edge (via Playwright)
 - **MCP SDK**: @modelcontextprotocol/sdk
 
 ## License

@@ -83,7 +83,7 @@ async function setup() {
   
   const page = await context.newPage();
   
-  console.log("打开 Google AI 搜索...");
+  console.log("打开 HUGE AI 搜索...");
   await page.goto("https://www.google.com/search?q=hello&udm=50");
   
   console.log("\n" + "=".repeat(60));

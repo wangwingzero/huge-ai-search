@@ -1,6 +1,6 @@
 # Huge AI Chat (VS Code Extension)
 
-在 VS Code 内提供独立聊天窗口，复用 `huge-ai-search` MCP Server，直接向 Google AI Mode 提问并显示回复。
+在 VS Code 内提供独立聊天窗口，复用 `huge-ai-search` MCP Server，直接向 HUGE AI Mode 提问并显示回复。
 
 ## 功能
 

@@ -46,6 +46,9 @@ function getSanitizedEnv(extraEnv?: Record<string, string>): Record<string, stri
 }
 
 export class McpClientManager {
+  private static readonly TOOL_TIMEOUT_TEXT_MS = 70_000;
+  private static readonly TOOL_TIMEOUT_IMAGE_MS = 110_000;
+
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connecting: Promise<void> | null = null;
@@ -109,12 +112,20 @@ export class McpClientManager {
       throw new Error("MCP 客户端未连接。");
     }
 
+    const hasImageInput = Boolean(args.image_path && args.image_path.trim().length > 0);
+    const timeoutMs = hasImageInput
+      ? McpClientManager.TOOL_TIMEOUT_IMAGE_MS
+      : McpClientManager.TOOL_TIMEOUT_TEXT_MS;
+
     const result = await this.client.callTool(
       {
         name: "search",
         arguments: args as unknown as Record<string, unknown>,
       },
-      CallToolResultSchema
+      CallToolResultSchema,
+      {
+        timeout: timeoutMs,
+      }
     );
 
     const text = this.extractTextFromToolResult(result);
@@ -346,6 +357,13 @@ export class McpClientManager {
       message.includes("command not found") ||
       message.includes("not recognized as an internal or external command") ||
       message.includes("e404")
+    ) {
+      return false;
+    }
+    if (
+      message.includes("request timed out") ||
+      message.includes("mcp error -32001") ||
+      message.includes("maximum total timeout exceeded")
     ) {
       return false;
     }

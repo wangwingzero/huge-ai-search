@@ -5,6 +5,10 @@
   const MERGED_IMAGE_MAX_WIDTH = 1800;
   const MERGED_IMAGE_MAX_TOTAL_HEIGHT = 9000;
   const MERGED_IMAGE_PADDING = 12;
+  const REQUEST_STATUS_TICK_MS = 500;
+  const WAIT_STAGE_QUICK_MS = 1000;
+  const WAIT_STAGE_RUNNING_MS = 3000;
+  const WAIT_STAGE_PROCESSING_MS = 8000;
   const DEBUG_BLOCK_START = ":::huge_ai_chat_debug_start:::";
   const DEBUG_BLOCK_END = ":::huge_ai_chat_debug_end:::";
   const KNOWN_CODE_LANGUAGES = new Set([
@@ -200,6 +204,99 @@
     } catch {
       return "";
     }
+  }
+
+  function formatElapsedTime(ms) {
+    const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+    if (safeMs < 10000) {
+      return `${(safeMs / 1000).toFixed(1)}s`;
+    }
+    const totalSeconds = Math.round(safeMs / 1000);
+    if (totalSeconds < 60) {
+      return `${totalSeconds}s`;
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}m ${pad2(seconds)}s`;
+  }
+
+  function getThreadPendingSince(thread) {
+    if (!thread || !Array.isArray(thread.messages)) {
+      return null;
+    }
+    let pendingSince = null;
+    for (const message of thread.messages) {
+      if (!message || message.role !== "assistant" || message.status !== "pending") {
+        continue;
+      }
+      const createdAt = Number(message.createdAt);
+      if (!Number.isFinite(createdAt) || createdAt <= 0) {
+        continue;
+      }
+      if (pendingSince === null || createdAt < pendingSince) {
+        pendingSince = createdAt;
+      }
+    }
+    return pendingSince;
+  }
+
+  function buildPendingStatusOverlay(status, thread) {
+    if (!status || status.kind !== "progress" || runtime.authRunning || runtime.preparingImage) {
+      return null;
+    }
+    if (!isThreadPending(thread)) {
+      return null;
+    }
+
+    const pendingSince = getThreadPendingSince(thread);
+    const fallbackSince = Number(status.at);
+    const startAt =
+      typeof pendingSince === "number" && Number.isFinite(pendingSince)
+        ? pendingSince
+        : Number.isFinite(fallbackSince)
+          ? fallbackSince
+          : Date.now();
+    const elapsedMs = Math.max(0, Date.now() - startAt);
+    const elapsedLabel = formatElapsedTime(elapsedMs);
+    const timeText = `已等待 ${elapsedLabel}`;
+
+    if (elapsedMs < WAIT_STAGE_QUICK_MS) {
+      return {
+        kind: "progress",
+        title: "请求已发送",
+        detail: `请求已发送，正在调用搜索服务（${timeText}）。`,
+        suggestion: "连接正常，通常几秒内会返回。",
+        timeText,
+      };
+    }
+
+    if (elapsedMs < WAIT_STAGE_RUNNING_MS) {
+      return {
+        kind: "progress",
+        title: "搜索进行中",
+        detail: `正在等待 AI 生成回答（${timeText}）。`,
+        suggestion: "流程正常，请稍候。",
+        timeText,
+      };
+    }
+
+    if (elapsedMs < WAIT_STAGE_PROCESSING_MS) {
+      return {
+        kind: "progress",
+        title: "正在整理结果",
+        detail: `已拿到部分内容，正在整理来源与格式（${timeText}）。`,
+        suggestion: "来源链接可能稍后出现，属于正常现象。",
+        timeText,
+      };
+    }
+
+    return {
+      kind: "progress",
+      title: "响应较慢但流程正常",
+      detail: `当前网络或页面响应较慢，请求仍在执行（${timeText}）。`,
+      suggestion: "若长时间无返回，可点击 Retry，或执行 Run Setup 后重试。",
+      timeText,
+    };
   }
 
   function pad2(value) {
@@ -576,32 +673,36 @@
 
   function renderStatusBar() {
     const status = getVisibleStatus();
-    const indicatorKind = getStatusIndicatorKind(status);
+    const activeThread = getActiveThread();
+    const pendingOverlay = buildPendingStatusOverlay(status, activeThread);
+    const renderStatus = pendingOverlay ? { ...status, ...pendingOverlay } : status;
+    const shouldShowExpanded = runtime.statusExpanded || Boolean(pendingOverlay);
+    const indicatorKind = getStatusIndicatorKind(renderStatus);
 
-    dom.statusBar.className = `status-bar status-${status.kind}${runtime.statusExpanded ? "" : " hidden"}`;
-    dom.statusTitle.textContent = status.title;
-    dom.statusTime.textContent = formatStatusTime(status.at);
+    dom.statusBar.className = `status-bar status-${renderStatus.kind}${shouldShowExpanded ? "" : " hidden"}`;
+    dom.statusTitle.textContent = renderStatus.title;
+    dom.statusTime.textContent = pendingOverlay?.timeText || formatStatusTime(renderStatus.at);
 
     if (dom.statusToggleBtn) {
       dom.statusToggleBtn.className = `btn icon-btn status-toggle status-${indicatorKind}`;
-      dom.statusToggleBtn.setAttribute("aria-pressed", runtime.statusExpanded ? "true" : "false");
-      dom.statusToggleBtn.setAttribute("aria-label", `状态：${status.title}`);
-      const toggleHint = runtime.statusExpanded ? "点击收起状态详情" : "点击展开状态详情";
-      const tooltip = `${status.title} (${toggleHint})`;
+      dom.statusToggleBtn.setAttribute("aria-pressed", shouldShowExpanded ? "true" : "false");
+      dom.statusToggleBtn.setAttribute("aria-label", `状态：${renderStatus.title}`);
+      const toggleHint = shouldShowExpanded ? "点击收起状态详情" : "点击展开状态详情";
+      const tooltip = `${renderStatus.title} (${toggleHint})`;
       dom.statusToggleBtn.dataset.tooltip = tooltip;
       dom.statusToggleBtn.title = tooltip;
     }
 
-    if (status.detail) {
-      dom.statusDetail.textContent = status.detail;
+    if (renderStatus.detail) {
+      dom.statusDetail.textContent = renderStatus.detail;
       dom.statusDetail.style.display = "block";
     } else {
       dom.statusDetail.textContent = "";
       dom.statusDetail.style.display = "none";
     }
 
-    if (status.suggestion) {
-      dom.statusSuggestion.textContent = status.suggestion;
+    if (renderStatus.suggestion) {
+      dom.statusSuggestion.textContent = renderStatus.suggestion;
       dom.statusSuggestion.style.display = "block";
     } else {
       dom.statusSuggestion.textContent = "";
@@ -1106,7 +1207,7 @@
 
       const meta = document.createElement("div");
       meta.className = "meta";
-      const roleText = message.role === "user" ? "You" : "Google AI";
+      const roleText = message.role === "user" ? "You" : "HUGE AI";
 
       const metaLabel = document.createElement("span");
       metaLabel.textContent = `${roleText} · ${formatStatusTime(message.createdAt)}`;
@@ -1160,7 +1261,12 @@
     if (dom.exportThreadBtn) {
       dom.exportThreadBtn.disabled = !hasMessages;
     }
-    dom.sendBtn.textContent = pending ? "发送中..." : "Send";
+    const pendingSince = getThreadPendingSince(thread);
+    if (pending && pendingSince) {
+      dom.sendBtn.textContent = `发送中... ${formatElapsedTime(Date.now() - pendingSince)}`;
+    } else {
+      dom.sendBtn.textContent = pending ? "发送中..." : "Send";
+    }
 
     if (!thread) {
       dom.input.placeholder = "请先创建会话，再输入问题。";
@@ -1677,6 +1783,17 @@
 
   restoreDraft();
   wireEvents();
+  setInterval(() => {
+    const activeThread = getActiveThread();
+    if (!activeThread) {
+      return;
+    }
+    if (!isThreadPending(activeThread) || runtime.authRunning) {
+      return;
+    }
+    renderStatusBar();
+    renderComposerState();
+  }, REQUEST_STATUS_TICK_MS);
   renderStatusBar();
   renderAttachments();
   renderComposerState();

@@ -16,6 +16,8 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as net from "net";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { initializeLogger, writeLog } from "./logger.js";
 
 initializeLogger();
@@ -41,9 +43,37 @@ export interface SearchResult {
   error: string;
 }
 
+interface FileInputSnapshot {
+  total: number;
+  imageAcceptInputs: number;
+  inputsWithFiles: number;
+}
+
+interface NodriverBridgeResult {
+  success: boolean;
+  stateSaved: boolean;
+  message: string;
+}
+
+interface NodriverImageSearchResult {
+  success: boolean;
+  aiAnswer: string;
+  sources: SearchSource[];
+  error: string;
+  message: string;
+}
+
+interface ProcessExecResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  error?: string;
+  timedOut: boolean;
+}
+
 // AI 模式选择器（2026 年最新）
 const AI_SELECTORS = [
-  'div[data-subtree="aimc"]', // Google AI Mode 核心容器（最新）
+  'div[data-subtree="aimc"]', // HUGE AI Mode 核心容器（最新）
   'div[data-attrid="wa:/m/0"]', // 旧版选择器
   '[data-async-type="editableDirectAnswer"]', // AI 回答区域
   ".wDYxhc", // AI 概述容器
@@ -68,6 +98,8 @@ const CAPTCHA_KEYWORDS = [
 const AI_LOADING_KEYWORDS = [
   "正在思考",
   "正在生成",
+  "正在查找",
+  "Searching",
   "Thinking",
   "Generating",
   "Loading",
@@ -82,31 +114,54 @@ const AI_LOADING_SELECTORS = [
 
 // 追问输入框选择器（按优先级排序）
 const FOLLOW_UP_SELECTORS = [
+  'div[data-subtree="aimc"] textarea',
+  'div[data-subtree="aimc"] input[type="text"]',
+  'div[data-subtree="aimc"] [contenteditable="true"]',
   'textarea[placeholder*="follow"]',
   'textarea[placeholder*="追问"]',
   'textarea[placeholder*="提问"]',
   'textarea[placeholder*="Ask"]',
+  'textarea[placeholder*="问"]',
+  'textarea[placeholder*="anything"]',
   'textarea[aria-label*="follow"]',
   'textarea[aria-label*="追问"]',
+  'textarea[aria-label*="问"]',
   'input[placeholder*="follow"]',
   'input[placeholder*="追问"]',
+  'input[placeholder*="问"]',
+  'input[placeholder*="anything"]',
   'div[contenteditable="true"][aria-label*="follow"]',
   'div[contenteditable="true"][aria-label*="追问"]',
+  'div[contenteditable="true"][aria-label*="问"]',
+  'textarea[name="q"]',
   'textarea:not([name="q"])',
   'div[contenteditable="true"]',
 ];
 
 const PROMPT_INPUT_SELECTORS = [
+  'div[data-subtree="aimc"] textarea',
+  'div[data-subtree="aimc"] input[name="q"]',
+  'div[data-subtree="aimc"] input[type="text"]',
+  'div[data-subtree="aimc"] [role="textbox"]',
+  'div[data-subtree="aimc"] [contenteditable="true"]',
+  'div[data-subtree="aimc"] [contenteditable]:not([contenteditable="false"])',
   'textarea[name="q"]',
   'textarea[aria-label*="Search"]',
   'textarea[aria-label*="搜索"]',
   'textarea[aria-label*="Ask"]',
+  'textarea[aria-label*="问"]',
   'textarea[placeholder*="Ask"]',
   'textarea[placeholder*="搜索"]',
   'textarea[placeholder*="提问"]',
+  'textarea[placeholder*="问"]',
+  'textarea[placeholder*="anything"]',
   'input[name="q"]',
   'input[aria-label*="Search"]',
   'input[aria-label*="搜索"]',
+  'input[aria-label*="问"]',
+  'input[placeholder*="问"]',
+  '[role="textbox"]',
+  '[contenteditable]:not([contenteditable="false"])',
   'textarea',
   'input[type="text"]',
 ];
@@ -115,37 +170,103 @@ const PROMPT_SUBMIT_BUTTON_SELECTORS = [
   'button[aria-label*="发送"]',
   'button[aria-label*="Send"]',
   'button[aria-label*="submit"]',
+  'button[aria-label*="提交"]',
   '[role="button"][aria-label*="发送"]',
   '[role="button"][aria-label*="Send"]',
   '[role="button"][aria-label*="submit"]',
+  '[role="button"][aria-label*="提交"]',
+  'button:has-text("发送")',
+  'button:has-text("Send")',
+  '[role="button"]:has-text("发送")',
+  '[role="button"]:has-text("Send")',
   'button[type="submit"]',
 ];
 
-const IMAGE_UPLOAD_TRIGGER_SELECTORS = [
+const IMAGE_PROMPT_SEND_BUTTON_SELECTORS = [
+  'button[aria-label*="发送"]',
+  '[role="button"][aria-label*="发送"]',
+  'button[aria-label*="Send"]',
+  '[role="button"][aria-label*="Send"]',
+  'button[aria-label*="submit"]',
+  '[role="button"][aria-label*="submit"]',
+  'button[aria-label*="提交"]',
+  '[role="button"][aria-label*="提交"]',
+  'button:has-text("发送")',
+  '[role="button"]:has-text("发送")',
+  'button:has-text("Send")',
+  '[role="button"]:has-text("Send")',
+];
+
+const IMAGE_UPLOAD_MENU_TRIGGER_SELECTORS = [
   'button[aria-label*="更多输入项"]',
   'button[aria-label*="更多输入"]',
   'button[aria-label*="More input"]',
   'button[aria-label*="input options"]',
   '[role="button"][aria-label*="更多输入项"]',
   '[role="button"][aria-label*="More input"]',
-  'button[aria-label*="图片"]',
-  'button[aria-label*="图像"]',
+];
+
+const IMAGE_UPLOAD_OPTION_SELECTORS = [
+  'button[aria-label*="上传图片"]',
+  '[role="button"][aria-label*="上传图片"]',
   'button[aria-label*="上传"]',
+  '[role="button"][aria-label*="上传"]',
+  'button[aria-label*="图片"]',
+  '[role="button"][aria-label*="图片"]',
+  'button[aria-label*="图像"]',
+  '[role="button"][aria-label*="图像"]',
   'button[aria-label*="image"]',
+  '[role="button"][aria-label*="image"]',
   'button[aria-label*="Image"]',
+  '[role="button"][aria-label*="Image"]',
   'button[aria-label*="photo"]',
   'button[aria-label*="Photo"]',
   'button[aria-label*="Lens"]',
-  '[role="button"][aria-label*="图片"]',
-  '[role="button"][aria-label*="上传"]',
-  '[role="button"][aria-label*="image"]',
   '[role="button"][aria-label*="Lens"]',
+  '[role="menu"] button[aria-label*="上传"]',
+  '[role="menu"] button[aria-label*="image"]',
+  '[role="menu"] [role="button"][aria-label*="上传"]',
 ];
 
 const IMAGE_FILE_INPUT_SELECTORS = [
+  'div[data-subtree="aimc"] input[type="file"][accept*="image"]',
+  'div[data-subtree="aimc"] input[type="file"]',
   'input[type="file"][accept*="image"]',
   'input[type="file"][accept*="png"]',
   'input[type="file"]',
+];
+
+const IMAGE_ATTACHMENT_READY_SELECTORS = [
+  'div[data-subtree="aimc"] img[src^="blob:"]',
+  'div[data-subtree="aimc"] button[aria-label*="移除"]',
+  'div[data-subtree="aimc"] button[aria-label*="删除"]',
+  'div[data-subtree="aimc"] button[aria-label*="Remove"]',
+  'div[data-subtree="aimc"] [role="button"][aria-label*="移除"]',
+  'div[data-subtree="aimc"] [role="button"][aria-label*="Remove"]',
+];
+
+const SUBMIT_BUTTON_HINTS = [
+  "send",
+  "submit",
+  "发送",
+  "提交",
+  "ask",
+  "提问",
+  "询问",
+  "follow",
+];
+
+const SUBMIT_BUTTON_EXCLUDE_HINTS = [
+  "开始新的搜索",
+  "new search",
+  "重新搜索",
+  "clear",
+  "重置",
+  "删除",
+  "移除",
+  "关闭",
+  "上传",
+  "更多输入",
 ];
 
 const IMAGE_ONLY_PROMPT_BY_LANGUAGE: Record<string, string> = {
@@ -183,6 +304,1558 @@ const BLOCKED_URL_PATTERNS = [
 
 // 会话超时时间（秒）
 const SESSION_TIMEOUT = 300; // 5 分钟
+const NODRIVER_DEFAULT_WAIT_SECONDS = 300;
+const NODRIVER_SCRIPT_FILE_NAME = "nodriver_auth_bridge.py";
+const NODRIVER_LOGIN_URL = "https://www.google.com/search?q=hello&udm=50";
+const NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME = "nodriver_image_search_bridge_v2.py";
+const NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS = 85;
+const NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT = false;
+
+const NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT = String.raw`#!/usr/bin/env python3
+import argparse
+import asyncio
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+CAPTCHA_KEYWORDS = [
+    "unusual traffic",
+    "automated requests",
+    "sorry/index",
+    "recaptcha",
+    "验证您是真人",
+    "我们的系统检测到",
+]
+
+PLACEHOLDER_PATTERNS = [
+    "想聊点什么",
+    "what would you like to talk about",
+    "what can i help with",
+    "how can i help",
+]
+
+FILE_INPUT_SELECTORS = [
+    'div[data-subtree="aimc"] input[type="file"][accept*="image"]',
+    'div[data-subtree="aimc"] input[type="file"]',
+    'input[type="file"][accept*="image"]',
+    'input[type="file"][accept*="png"]',
+    'input[type="file"]',
+]
+
+UPLOAD_MENU_SELECTORS = [
+    'button[aria-label*="更多输入项"]',
+    'button[aria-label*="更多输入"]',
+    'button[aria-label*="More input"]',
+    '[role="button"][aria-label*="更多输入项"]',
+    '[role="button"][aria-label*="More input"]',
+]
+
+PROMPT_SELECTORS = [
+    'div[data-subtree="aimc"] textarea',
+    'div[data-subtree="aimc"] input[name="q"]',
+    'div[data-subtree="aimc"] input[type="text"]',
+    'div[data-subtree="aimc"] [role="textbox"]',
+    'div[data-subtree="aimc"] [contenteditable="true"]',
+    'div[data-subtree="aimc"] [contenteditable]:not([contenteditable="false"])',
+    'textarea[name="q"]',
+    'textarea[aria-label*="Search"]',
+    'textarea[aria-label*="Ask"]',
+    'textarea[aria-label*="问"]',
+    'textarea[placeholder*="Ask"]',
+    'textarea[placeholder*="提问"]',
+    'textarea[placeholder*="问"]',
+    'input[name="q"]',
+    'input[type="text"]',
+    '[role="textbox"]',
+    '[contenteditable]:not([contenteditable="false"])',
+    'textarea',
+]
+
+SEND_BUTTON_SELECTORS = [
+    'button[aria-label*="发送"]',
+    '[role="button"][aria-label*="发送"]',
+    'button[aria-label*="Send"]',
+    '[role="button"][aria-label*="Send"]',
+    'button[aria-label*="submit"]',
+    '[role="button"][aria-label*="submit"]',
+    'button[aria-label*="提交"]',
+    '[role="button"][aria-label*="提交"]',
+    'button:has-text("发送")',
+    '[role="button"]:has-text("发送")',
+    'button:has-text("Send")',
+    '[role="button"]:has-text("Send")',
+]
+
+EXTRACT_JS = """
+(() => {
+  function isGoogleHost(hostname) {
+    const host = (hostname || "").toLowerCase();
+    return host.includes("google.") || host.includes("gstatic.com") || host.includes("googleapis.com");
+  }
+
+  function normalizeLink(rawHref) {
+    if (!rawHref) return "";
+    try {
+      const parsed = new URL(rawHref);
+      if (!["http:", "https:"].includes(parsed.protocol)) return "";
+
+      if (isGoogleHost(parsed.hostname)) {
+        const redirected = parsed.searchParams.get("url") || parsed.searchParams.get("q") || "";
+        if (!redirected) return "";
+        const target = new URL(redirected);
+        if (!["http:", "https:"].includes(target.protocol)) return "";
+        if (isGoogleHost(target.hostname)) return "";
+        return target.href;
+      }
+      return parsed.href;
+    } catch {
+      return "";
+    }
+  }
+
+  const candidates = [
+    document.querySelector("div[data-subtree='aimc']"),
+    document.querySelector("div[data-attrid='wa:/m/0']"),
+    document.querySelector("[data-async-type='editableDirectAnswer']"),
+    document.querySelector(".wDYxhc"),
+  ].filter(Boolean);
+
+  let container = candidates.length ? candidates[0] : null;
+  let answer = "";
+  for (const node of candidates) {
+    const text = ((node && (node.innerText || node.textContent)) || "").trim();
+    if (text.length > answer.length) {
+      answer = text;
+      container = node;
+    }
+  }
+
+  if (!answer) {
+    answer = ((document.body && document.body.innerText) || "").trim();
+  }
+
+  const seen = new Set();
+  const sources = [];
+  if (container) {
+    const anchors = container.querySelectorAll("a[href]");
+    for (const anchor of anchors) {
+      const normalized = normalizeLink(anchor.href);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+
+      let title = (anchor.innerText || anchor.getAttribute("aria-label") || anchor.title || "").trim();
+      if (!title) title = normalized;
+      const card = anchor.closest("div,li,article,section");
+      const snippetRaw = (card && (card.innerText || card.textContent)) || "";
+      const snippet = snippetRaw.trim().slice(0, 220);
+      sources.push({ title, url: normalized, snippet });
+      if (sources.length >= 8) break;
+    }
+  }
+
+  const bodyLower = ((document.body && document.body.innerText) || "").toLowerCase();
+  const blocked =
+    (location.href || "").toLowerCase().includes("sorry/index") ||
+    bodyLower.includes("unusual traffic") ||
+    bodyLower.includes("automated requests") ||
+    bodyLower.includes("验证您是真人") ||
+    bodyLower.includes("我们的系统检测到") ||
+    bodyLower.includes("recaptcha");
+
+  return {
+    answer,
+    sources,
+    blocked,
+    url: location.href || "",
+  };
+})()
+"""
+
+cdp_input = None
+
+
+def emit(payload):
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def should_ignore_answer(answer: str, baseline: str) -> bool:
+    text = (answer or "").strip()
+    if not text:
+        return True
+    if baseline and text == baseline.strip():
+        return True
+    lower = text.lower()
+    if len(text) <= 64 and any(pattern in lower for pattern in PLACEHOLDER_PATTERNS):
+        return True
+    return False
+
+
+def normalize_sources(raw_sources):
+    normalized = []
+    seen = set()
+    for source in raw_sources or []:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").strip()
+        if not url:
+            continue
+        parsed = None
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                continue
+        except Exception:
+            continue
+
+        host = (parsed.hostname or "").lower()
+        if host.endswith("google.com") or host.endswith("googleusercontent.com"):
+            q = parse_qs(parsed.query)
+            redirected = (q.get("url") or q.get("q") or [""])[0]
+            if redirected:
+                try:
+                    redirect_parsed = urlparse(redirected)
+                    if redirect_parsed.scheme in ("http", "https"):
+                        url = redirected
+                        host = (redirect_parsed.hostname or "").lower()
+                except Exception:
+                    pass
+
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        title = str(source.get("title") or "").strip() or url
+        snippet = str(source.get("snippet") or "").strip()
+        normalized.append({"title": title, "url": url, "snippet": snippet})
+        if len(normalized) >= 8:
+            break
+    return normalized
+
+
+async def evaluate_extract(tab):
+    try:
+        result = await tab.evaluate(EXTRACT_JS, return_by_value=True)
+    except TypeError:
+        result = await tab.evaluate(EXTRACT_JS)
+    except Exception:
+        return {"answer": "", "sources": [], "blocked": False, "url": ""}
+
+    if isinstance(result, tuple):
+        remote = result[0] if result else None
+        if isinstance(remote, dict):
+            result = remote
+        else:
+            return {"answer": "", "sources": [], "blocked": False, "url": ""}
+
+    if not isinstance(result, dict):
+        return {"answer": "", "sources": [], "blocked": False, "url": ""}
+
+    return {
+        "answer": str(result.get("answer") or "").strip(),
+        "sources": normalize_sources(result.get("sources") or []),
+        "blocked": bool(result.get("blocked")),
+        "url": str(result.get("url") or ""),
+    }
+
+
+async def find_first(tab, selectors, timeout=1.4):
+    for selector in selectors:
+        try:
+            element = await tab.select(selector, timeout=timeout)
+            if element:
+                return element
+        except Exception:
+            continue
+    return None
+
+
+async def click_first(tab, selectors, timeout=1.0):
+    element = await find_first(tab, selectors, timeout=timeout)
+    if not element:
+        return False
+    for method_name in ("mouse_click", "click", "click_mouse"):
+        method = getattr(element, method_name, None)
+        if method is None:
+            continue
+        try:
+            await method()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def click_upload_menu_button(tab, timeout=1.2):
+    if await click_first(tab, UPLOAD_MENU_SELECTORS, timeout=timeout):
+        return True
+
+    expression = """
+(() => {
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function isEnabled(el) {
+    if (!el) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute("aria-disabled") === "true") return false;
+    return true;
+  }
+  function labelOf(el) {
+    return (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      el.innerText ||
+      el.textContent ||
+      ""
+    ).trim().toLowerCase();
+  }
+
+  const includeHints = ["上传", "image", "photo", "upload", "file", "attach", "附件", "图片", "添加", "add", "plus"];
+  const excludeHints = ["send", "submit", "发送", "提交", "voice", "mic", "语音", "remove", "删除", "移除", "close", "关闭"];
+
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const scopes = root === document ? [document] : [root, document];
+  const buttons = [];
+  for (const scope of scopes) {
+    for (const btn of Array.from(scope.querySelectorAll("button, [role='button']"))) {
+      if (btn && !buttons.includes(btn)) {
+        buttons.push(btn);
+      }
+    }
+  }
+  const clickable = buttons.filter((btn) => isVisible(btn) && isEnabled(btn));
+
+  let target = clickable.find((btn) => {
+    const label = labelOf(btn);
+    if (!label) return false;
+    if (excludeHints.some((hint) => label.includes(hint))) return false;
+    return includeHints.some((hint) => label.includes(hint));
+  });
+
+  if (!target) {
+    const iconButtons = clickable.filter((btn) => {
+      const label = labelOf(btn);
+      if (excludeHints.some((hint) => label.includes(hint))) return false;
+      const hasSvg = !!btn.querySelector("svg");
+      const hasText = (btn.innerText || "").trim().length > 0;
+      return hasSvg && !hasText;
+    });
+    if (iconButtons.length) {
+      iconButtons.sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        const sa = ra.bottom * 3 - ra.left;
+        const sb = rb.bottom * 3 - rb.left;
+        return sb - sa;
+      });
+      target = iconButtons[0];
+    }
+  }
+
+  if (!target) return false;
+  try {
+    target.click();
+    return true;
+  } catch (_) {
+    return false;
+  }
+})()
+"""
+
+    try:
+        clicked = await tab.evaluate(expression, return_by_value=True)
+    except TypeError:
+        clicked = await tab.evaluate(expression)
+    except Exception:
+        return False
+    if isinstance(clicked, tuple):
+        clicked = clicked[0] if clicked else False
+    return bool(clicked)
+
+
+async def try_send_file(tab, file_path: str):
+    for selector in FILE_INPUT_SELECTORS:
+        try:
+            elements = await tab.select_all(selector, timeout=0.9)
+        except Exception:
+            continue
+        for element in elements or []:
+            try:
+                await element.send_file(file_path)
+                await asyncio.sleep(1.0)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+async def upload_image(tab, image_path: str):
+    for _ in range(3):
+        if await try_send_file(tab, image_path):
+            return True
+
+        await click_upload_menu_button(tab, timeout=1.2)
+        await asyncio.sleep(0.35)
+
+        if await try_send_file(tab, image_path):
+            return True
+
+    return await try_send_file(tab, image_path)
+
+
+async def submit_prompt(tab, prompt: str):
+    async def collect_submit_diagnostics():
+        expression = """
+(() => {
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function isEnabled(el) {
+    if (!el) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute("aria-disabled") === "true") return false;
+    return true;
+  }
+  function shortText(el) {
+    if (!el) return "";
+    const text = (
+      el.getAttribute?.("aria-label") ||
+      el.getAttribute?.("placeholder") ||
+      el.getAttribute?.("title") ||
+      el.innerText ||
+      el.textContent ||
+      ""
+    ).trim();
+    return text.slice(0, 60);
+  }
+
+  const root = document.querySelector("div[data-subtree='aimc']");
+  const scopes = root ? [root, document] : [document];
+  const inputSelectors = [
+    "textarea",
+    "input[type='text']",
+    "input[name='q']",
+    "[contenteditable]",
+    "[role='textbox']",
+  ];
+  const buttonSelectors = [
+    "button[aria-label*='发送']",
+    "button[aria-label*='Send']",
+    "button[aria-label*='提交']",
+    "button, [role='button']",
+  ];
+
+  const inputStats = inputSelectors.map((selector) => {
+    const all = [];
+    for (const scope of scopes) {
+      for (const node of Array.from(scope.querySelectorAll(selector))) {
+        if (node && !all.includes(node)) all.push(node);
+      }
+    }
+    const visible = all.filter((el) => isVisible(el));
+    const enabled = visible.filter((el) => isEnabled(el));
+    return {
+      selector,
+      total: all.length,
+      visible: visible.length,
+      enabled: enabled.length,
+      sample: enabled.slice(0, 2).map((el) => shortText(el)),
+    };
+  });
+
+  const buttonStats = buttonSelectors.map((selector) => {
+    const all = [];
+    for (const scope of scopes) {
+      for (const node of Array.from(scope.querySelectorAll(selector))) {
+        if (node && !all.includes(node)) all.push(node);
+      }
+    }
+    const visible = all.filter((el) => isVisible(el));
+    const enabled = visible.filter((el) => isEnabled(el));
+    return {
+      selector,
+      total: all.length,
+      visible: visible.length,
+      enabled: enabled.length,
+      sample: enabled.slice(0, 3).map((el) => shortText(el)),
+    };
+  });
+
+  return JSON.stringify({
+    url: location.href || "",
+    rootFound: !!root,
+    inputStats,
+    buttonStats,
+  });
+})()
+"""
+        try:
+            diag = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            diag = await tab.evaluate(expression)
+        except Exception:
+            return {"error": "collect_diag_eval_failed"}
+        if isinstance(diag, tuple):
+            diag = diag[0] if diag else None
+        if isinstance(diag, str):
+            try:
+                parsed = json.loads(diag)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {"raw": diag[:300]}
+        if isinstance(diag, dict):
+            return diag
+        return {"error": "collect_diag_invalid_result"}
+
+    async def is_prompt_still_pending() -> bool:
+        escaped_prompt = json.dumps((prompt or "").strip())
+        expression = f"""
+(() => {{
+  const prompt = {escaped_prompt};
+  if (!prompt) return false;
+  function isVisible(el) {{
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }}
+  function textOf(el) {{
+    if (!el) return "";
+    if (el.isContentEditable) {{
+      return (el.innerText || el.textContent || "").trim();
+    }}
+    return (el.value || el.textContent || "").trim();
+  }}
+
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const scopes = root === document ? [document] : [root, document];
+  const inputs = [];
+  for (const scope of scopes) {{
+    const found = Array.from(
+      scope.querySelectorAll(
+        "textarea, input[type='text'], input[name='q'], [contenteditable], [role='textbox']"
+      )
+    );
+    for (const item of found) {{
+      if (item && !inputs.includes(item)) {{
+        inputs.push(item);
+      }}
+    }}
+  }}
+  const visibleInputs = inputs.filter((input) => isVisible(input));
+  if (!visibleInputs.length) return "__UNKNOWN__";
+
+  return visibleInputs.some((input) => {{
+    const value = textOf(input);
+    return value.includes(prompt);
+  }});
+}})()
+"""
+        try:
+            pending = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            pending = await tab.evaluate(expression)
+        except Exception:
+            return True
+        if isinstance(pending, tuple):
+            pending = pending[0] if pending else False
+        if isinstance(pending, str) and pending == "__UNKNOWN__":
+            return True
+        return bool(pending)
+
+    async def is_prompt_reflected_in_url() -> bool:
+        escaped_prompt = json.dumps((prompt or "").strip())
+        expression = f"""
+(() => {{
+  const prompt = {escaped_prompt};
+  if (!prompt) return false;
+  const href = location.href || "";
+  if (!href) return false;
+  try {{
+    const parsed = new URL(href);
+    const q = (parsed.searchParams.get("q") || "").trim();
+    if (q && (q.includes(prompt) || prompt.includes(q))) {{
+      return true;
+    }}
+  }} catch (_){{
+    // ignore
+  }}
+  try {{
+    return decodeURIComponent(href).includes(prompt);
+  }} catch (_){{
+    return href.includes(prompt);
+  }}
+}})()
+"""
+        try:
+            reflected = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            reflected = await tab.evaluate(expression)
+        except Exception:
+            return False
+        if isinstance(reflected, tuple):
+            reflected = reflected[0] if reflected else False
+        return bool(reflected)
+
+    async def is_send_button_ready() -> bool:
+        expression = """
+(() => {
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function isEnabled(el) {
+    if (!el) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute("aria-disabled") === "true") return false;
+    return true;
+  }
+  function labelOf(el) {
+    return (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      el.innerText ||
+      el.textContent ||
+      ""
+    ).trim().toLowerCase();
+  }
+  const includeHints = ["send", "submit", "发送", "提交", "ask", "提问", "询问"];
+  const excludeHints = ["上传", "image", "photo", "mic", "voice", "语音", "更多输入", "add", "plus", "remove", "删除", "移除"];
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const buttons = Array.from(root.querySelectorAll("button, [role='button']"))
+    .filter((el) => isVisible(el) && isEnabled(el));
+  if (!buttons.length) return false;
+  const labeled = buttons.find((btn) => {
+    const label = labelOf(btn);
+    if (!label) return false;
+    if (excludeHints.some((hint) => label.includes(hint))) return false;
+    return includeHints.some((hint) => label.includes(hint));
+  });
+  if (labeled) return true;
+  const iconButtons = buttons.filter((btn) => {
+    const label = labelOf(btn);
+    if (excludeHints.some((hint) => label.includes(hint))) return false;
+    const hasSvg = !!btn.querySelector("svg");
+    const hasText = (btn.innerText || "").trim().length > 0;
+    return hasSvg && !hasText;
+  });
+  return iconButtons.length > 0;
+})()
+"""
+        try:
+            ready = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            ready = await tab.evaluate(expression)
+        except Exception:
+            return False
+        if isinstance(ready, tuple):
+            ready = ready[0] if ready else False
+        return bool(ready)
+
+    async def has_submission_signal() -> bool:
+        if await is_prompt_still_pending():
+            return False
+        if await is_send_button_ready():
+            return False
+        return True
+
+    async def is_upload_busy() -> bool:
+        expression = """
+(() => {
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const busySelectors = [
+    "[aria-busy='true']",
+    "[role='progressbar']",
+    "progress",
+    ".progress",
+    ".loading",
+    ".spinner",
+  ];
+  for (const selector of busySelectors) {
+    const nodes = Array.from(root.querySelectorAll(selector)).filter((el) => isVisible(el));
+    if (nodes.length > 0) return true;
+  }
+
+  const textNodes = Array.from(root.querySelectorAll("div,span,p,small"))
+    .filter((el) => isVisible(el))
+    .slice(0, 240);
+  const busyHints = [
+    "正在上传",
+    "上传中",
+    "uploading",
+    "upload in progress",
+    "processing image",
+    "analyzing image",
+    "正在分析",
+    "处理中",
+  ];
+  for (const node of textNodes) {
+    const text = (node.innerText || node.textContent || "").trim().toLowerCase();
+    if (!text || text.length > 120) continue;
+    if (busyHints.some((hint) => text.includes(hint))) {
+      return true;
+    }
+  }
+  return false;
+})()
+"""
+        try:
+            busy = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            busy = await tab.evaluate(expression)
+        except Exception:
+            return False
+        if isinstance(busy, tuple):
+            busy = busy[0] if busy else False
+        return bool(busy)
+
+    async def wait_until_upload_ready(max_wait_seconds: float = 18.0) -> bool:
+        deadline = time.monotonic() + max(2.0, max_wait_seconds)
+        clear_rounds = 0
+        while time.monotonic() < deadline:
+            if await is_upload_busy():
+                clear_rounds = 0
+            else:
+                clear_rounds += 1
+                if clear_rounds >= 2:
+                    return True
+            await asyncio.sleep(0.35)
+        return False
+
+    async def click_send_button() -> bool:
+        if await click_first(tab, SEND_BUTTON_SELECTORS, timeout=0.9):
+            return True
+
+        expression = """
+(() => {
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function isDisabled(el) {
+    if (!el) return true;
+    if (el.disabled) return true;
+    if (el.getAttribute("aria-disabled") === "true") return true;
+    return false;
+  }
+  function buttonLabel(el) {
+    return (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      el.innerText ||
+      el.textContent ||
+      ""
+    ).trim().toLowerCase();
+  }
+
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const buttons = Array.from(root.querySelectorAll("button, [role='button']"))
+    .filter((el) => isVisible(el) && !isDisabled(el));
+  if (!buttons.length) return false;
+
+  const includeHints = ["send", "submit", "发送", "提交", "ask", "提问", "询问"];
+  const excludeHints = ["上传", "image", "photo", "mic", "voice", "语音", "更多输入", "add", "plus", "remove", "删除", "移除"];
+
+  let target = buttons.find((btn) => {
+    const label = buttonLabel(btn);
+    if (!label) return false;
+    if (excludeHints.some((hint) => label.includes(hint))) return false;
+    return includeHints.some((hint) => label.includes(hint));
+  });
+
+  if (!target) {
+    function scoreIconButton(btn) {
+      const rect = btn.getBoundingClientRect();
+      const bg = window.getComputedStyle(btn).backgroundColor || "";
+      const isTransparent = bg === "rgba(0, 0, 0, 0)" || bg === "transparent";
+      return rect.right + rect.bottom + (isTransparent ? 0 : 5000);
+    }
+    const iconButtons = buttons.filter((btn) => {
+      const label = buttonLabel(btn);
+      if (excludeHints.some((hint) => label.includes(hint))) return false;
+      const hasSvg = !!btn.querySelector("svg");
+      const hasText = (btn.innerText || "").trim().length > 0;
+      return hasSvg && !hasText;
+    });
+    if (iconButtons.length) {
+      iconButtons.sort((a, b) => {
+        return scoreIconButton(b) - scoreIconButton(a);
+      });
+      target = iconButtons[0];
+    }
+  }
+
+  if (!target) return false;
+  try {
+    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    for (const type of eventTypes) {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    target.click();
+  } catch (_) {
+    try {
+      target.click();
+    } catch (__){}
+  }
+  return true;
+})()
+"""
+        try:
+            clicked = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            clicked = await tab.evaluate(expression)
+        except Exception:
+            return False
+        if isinstance(clicked, tuple):
+            clicked = clicked[0] if clicked else False
+        return bool(clicked)
+
+    async def press_enter_via_cdp() -> bool:
+        if cdp_input is None:
+            return False
+        try:
+            await tab.send(
+                cdp_input.dispatch_key_event(
+                    "rawKeyDown",
+                    key="Enter",
+                    code="Enter",
+                    windows_virtual_key_code=13,
+                    native_virtual_key_code=13,
+                )
+            )
+            await tab.send(
+                cdp_input.dispatch_key_event(
+                    "keyDown",
+                    key="Enter",
+                    code="Enter",
+                    text="\\r",
+                    unmodified_text="\\r",
+                    windows_virtual_key_code=13,
+                    native_virtual_key_code=13,
+                )
+            )
+            await tab.send(
+                cdp_input.dispatch_key_event(
+                    "keyUp",
+                    key="Enter",
+                    code="Enter",
+                    windows_virtual_key_code=13,
+                    native_virtual_key_code=13,
+                )
+            )
+            return True
+        except Exception:
+            return False
+
+    async def run_submit_retries(max_wait_seconds: float = 14.0) -> bool:
+        deadline = time.monotonic() + max(3.0, max_wait_seconds)
+        while time.monotonic() < deadline:
+            if await has_submission_signal():
+                return True
+            if await is_upload_busy():
+                await asyncio.sleep(0.35)
+                continue
+            await press_enter_via_cdp()
+            await click_send_button()
+            await asyncio.sleep(0.45)
+            if await has_submission_signal():
+                return True
+        return False
+
+    async def submit_prompt_via_js() -> bool:
+        escaped_prompt = json.dumps((prompt or "").strip())
+        expression = f"""
+(() => {{
+  const prompt = {escaped_prompt};
+  if (!prompt) return false;
+
+  function isVisible(el) {{
+    if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }}
+  function isEnabled(el) {{
+    if (!el) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute("aria-disabled") === "true") return false;
+    return true;
+  }}
+  function textOf(el) {{
+    if (!el) return "";
+    if (el.isContentEditable) {{
+      return (el.innerText || el.textContent || "").trim();
+    }}
+    return (el.value || el.textContent || "").trim();
+  }}
+  function setText(el, value) {{
+    if (!el) return;
+    if (el.isContentEditable) {{
+      el.innerText = value;
+      el.dispatchEvent(new InputEvent("input", {{ bubbles: true, data: value, inputType: "insertText" }}));
+      return;
+    }}
+    if ("value" in el) {{
+      el.value = value;
+      el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+      el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+      return;
+    }}
+    el.textContent = value;
+    el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+  }}
+  function pickSendButton(root) {{
+    const includeHints = ["send", "submit", "发送", "提交", "ask", "提问", "询问"];
+    const excludeHints = ["上传", "image", "photo", "mic", "voice", "语音", "更多输入", "add", "plus", "remove", "删除", "移除"];
+
+    function labelOf(el) {{
+      return (
+        el.getAttribute("aria-label") ||
+        el.getAttribute("title") ||
+        el.innerText ||
+        el.textContent ||
+        ""
+      ).trim().toLowerCase();
+    }}
+
+    const scopes = root === document ? [document] : [root, document];
+    const allButtons = [];
+    for (const scope of scopes) {{
+      const found = Array.from(scope.querySelectorAll("button, [role='button']"));
+      for (const btn of found) {{
+        if (btn && !allButtons.includes(btn)) {{
+          allButtons.push(btn);
+        }}
+      }}
+    }}
+    const buttons = allButtons.filter((el) => isVisible(el) && isEnabled(el));
+    if (!buttons.length) return null;
+
+    let target = buttons.find((btn) => {{
+      const label = labelOf(btn);
+      if (!label) return false;
+      if (excludeHints.some((hint) => label.includes(hint))) return false;
+      return includeHints.some((hint) => label.includes(hint));
+    }});
+    if (target) return target;
+
+    const iconButtons = buttons.filter((btn) => {{
+      const label = labelOf(btn);
+      if (excludeHints.some((hint) => label.includes(hint))) return false;
+      const hasSvg = !!btn.querySelector("svg");
+      const hasText = (btn.innerText || "").trim().length > 0;
+      return hasSvg && !hasText;
+    }});
+    if (!iconButtons.length) return null;
+
+    iconButtons.sort((a, b) => {{
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      const bga = window.getComputedStyle(a).backgroundColor || "";
+      const bgb = window.getComputedStyle(b).backgroundColor || "";
+      const oa = (bga === "rgba(0, 0, 0, 0)" || bga === "transparent") ? 0 : 5000;
+      const ob = (bgb === "rgba(0, 0, 0, 0)" || bgb === "transparent") ? 0 : 5000;
+      return (ob + rb.right + rb.bottom) - (oa + ra.right + ra.bottom);
+    }});
+    return iconButtons[0];
+  }}
+
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const scopes = root === document ? [document] : [root, document];
+  const allInputs = [];
+  for (const scope of scopes) {{
+    const found = Array.from(
+      scope.querySelectorAll(
+        "textarea, input[type='text'], input[name='q'], [contenteditable], [role='textbox']"
+      )
+    );
+    for (const item of found) {{
+      if (item && !allInputs.includes(item)) {{
+        allInputs.push(item);
+      }}
+    }}
+  }}
+  const inputs = allInputs.filter((el) => isVisible(el) && isEnabled(el));
+  if (!inputs.length) return false;
+
+    inputs.sort((a, b) => {{
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      const aInAi = a.closest("div[data-subtree='aimc']") ? 10000 : 0;
+      const bInAi = b.closest("div[data-subtree='aimc']") ? 10000 : 0;
+      return (bInAi + rb.top) - (aInAi + ra.top);
+  }});
+
+  const input = inputs[0];
+  input.focus();
+  setText(input, prompt);
+  if (!textOf(input).includes(prompt)) return false;
+
+  const evt = {{ key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }};
+  input.dispatchEvent(new KeyboardEvent("keydown", evt));
+  input.dispatchEvent(new KeyboardEvent("keypress", evt));
+  input.dispatchEvent(new KeyboardEvent("keyup", evt));
+
+  let clickedButton = false;
+  const sendButton = pickSendButton(root);
+  if (sendButton) {{
+    try {{
+      const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+      for (const type of eventTypes) {{
+        sendButton.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
+      }}
+      sendButton.click();
+    }} catch (_) {{
+      try {{
+        sendButton.click();
+      }} catch (__){{}}
+    }}
+    clickedButton = true;
+  }}
+
+  return clickedButton || !textOf(input).includes(prompt);
+}})()
+"""
+        try:
+            submitted = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            submitted = await tab.evaluate(expression)
+        except Exception:
+            return False
+
+        if isinstance(submitted, tuple):
+            submitted = submitted[0] if submitted else False
+        return bool(submitted)
+
+    await wait_until_upload_ready(max_wait_seconds=20.0)
+    if await submit_prompt_via_js():
+        await asyncio.sleep(0.45)
+        if await run_submit_retries(max_wait_seconds=12.0):
+            return True, {}
+
+    for selector in PROMPT_SELECTORS:
+        try:
+            element = await tab.select(selector, timeout=1.3)
+        except Exception:
+            continue
+        if not element:
+            continue
+        try:
+            try:
+                await element.click()
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
+            try:
+                await element.clear_input()
+            except Exception:
+                pass
+            await element.send_keys(prompt)
+            await asyncio.sleep(0.2)
+            await element.send_keys("\n")
+            await asyncio.sleep(0.25)
+            await wait_until_upload_ready(max_wait_seconds=16.0)
+            if await run_submit_retries(max_wait_seconds=16.0):
+                return True, {}
+
+            # 同一输入框再做一次 JS 强制发送兜底，避免因为键盘事件未触发而卡住
+            if await submit_prompt_via_js():
+                await asyncio.sleep(0.45)
+                if await run_submit_retries(max_wait_seconds=12.0):
+                    return True, {}
+
+            # 仍然停留在输入框，尝试下一个候选输入控件
+            continue
+        except Exception:
+            continue
+
+    # CSS 选择器找不到可用输入框时，使用 JS 直接填充并触发发送
+    await wait_until_upload_ready(max_wait_seconds=16.0)
+    if await submit_prompt_via_js():
+        await asyncio.sleep(0.45)
+        if await run_submit_retries(max_wait_seconds=16.0):
+            return True, {}
+
+    return False, await collect_submit_diagnostics()
+
+
+async def wait_for_answer(tab, baseline: str, timeout_seconds: int):
+    deadline = time.monotonic() + timeout_seconds
+    latest = {"answer": "", "sources": [], "blocked": False, "url": ""}
+
+    while time.monotonic() < deadline:
+        current = await evaluate_extract(tab)
+        if current:
+            latest = current
+
+        answer = str(latest.get("answer") or "").strip()
+        if answer and not should_ignore_answer(answer, baseline):
+            return True, latest
+        await asyncio.sleep(1.2)
+
+    return False, latest
+
+
+async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--query", required=True)
+    parser.add_argument("--language", default="zh-CN")
+    parser.add_argument("--image-path", required=True)
+    parser.add_argument("--timeout-seconds", type=int, default=85)
+    parser.add_argument("--proxy", default="")
+    parser.add_argument("--headless", action="store_true")
+    args = parser.parse_args()
+
+    image_path = str(Path(args.image_path).resolve())
+    if not os.path.exists(image_path):
+        emit(
+            {
+                "success": False,
+                "ai_answer": "",
+                "sources": [],
+                "error": f"图片文件不存在: {image_path}",
+                "message": "image file missing",
+            }
+        )
+        return 1
+
+    try:
+        import nodriver as uc
+    except Exception as exc:
+        emit(
+            {
+                "success": False,
+                "ai_answer": "",
+                "sources": [],
+                "error": f"nodriver import failed: {exc}",
+                "message": "nodriver import failed",
+            }
+        )
+        return 2
+    global cdp_input
+    try:
+        import nodriver.cdp.input_ as cdp_input  # type: ignore
+    except Exception:
+        cdp_input = None
+
+    user_data_dir = Path.home() / ".huge-ai-search" / "nodriver_profile"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    is_ci = bool(os.environ.get("CI")) or bool(os.environ.get("GITHUB_ACTIONS"))
+    is_root = bool(hasattr(os, "geteuid") and os.geteuid() == 0)
+    is_windows = os.name == "nt"
+    use_sandbox = not (is_ci or is_root or is_windows)
+
+    browser_args = [
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-infobars",
+        "--disable-popup-blocking",
+        "--window-size=1920,1080",
+        "--start-maximized",
+        "--no-first-run",
+        "--no-service-autorun",
+        "--password-store=basic",
+    ]
+    if args.proxy:
+        browser_args.append(f"--proxy-server={args.proxy}")
+
+    browser = None
+    try:
+        config = uc.Config(
+            headless=bool(args.headless),
+            sandbox=use_sandbox,
+            browser_args=browser_args,
+            user_data_dir=str(user_data_dir),
+        )
+
+        browser = await uc.start(config=config)
+        tab = await browser.get(args.url)
+        await asyncio.sleep(1.8)
+
+        initial = await evaluate_extract(tab)
+        baseline = str(initial.get("answer") or "").strip()
+        if initial.get("blocked"):
+            await asyncio.sleep(1.5)
+
+        uploaded = await upload_image(tab, image_path)
+        if not uploaded:
+            emit(
+                {
+                    "success": False,
+                    "ai_answer": "",
+                    "sources": [],
+                    "error": "未找到可用的图片上传入口（nodriver）",
+                    "message": "image upload failed",
+                }
+            )
+            return 1
+
+        submitted, submit_diag = await submit_prompt(tab, args.query)
+        if not submitted:
+            diag_text = ""
+            if submit_diag:
+                try:
+                    diag_text = json.dumps(submit_diag, ensure_ascii=False)
+                except Exception:
+                    diag_text = str(submit_diag)
+            if diag_text:
+                print(f"NODRIVER_SUBMIT_DIAG: {diag_text}", file=sys.stderr)
+                diag_text = diag_text[:500]
+            emit(
+                {
+                    "success": False,
+                    "ai_answer": "",
+                    "sources": [],
+                    "error": (
+                        "图片已上传，但未找到可用输入框提交问题（nodriver）"
+                        + (f"；诊断: {diag_text}" if diag_text else "")
+                    ),
+                    "message": "prompt submit failed",
+                }
+            )
+            return 1
+
+        ok, extracted = await wait_for_answer(
+            tab,
+            baseline=baseline,
+            timeout_seconds=max(25, int(args.timeout_seconds)),
+        )
+        answer = str(extracted.get("answer") or "").strip()
+        sources = normalize_sources(extracted.get("sources") or [])
+
+        if not ok and should_ignore_answer(answer, baseline):
+            blocked_suffix = ""
+            if extracted.get("blocked"):
+                blocked_suffix = "（页面仍处于验证/拦截状态）"
+            emit(
+                {
+                    "success": False,
+                    "ai_answer": answer,
+                    "sources": sources,
+                    "error": f"等待图片分析结果超时{blocked_suffix}",
+                    "message": "timed out waiting ai answer",
+                }
+            )
+            return 1
+
+        emit(
+            {
+                "success": True,
+                "ai_answer": answer,
+                "sources": sources,
+                "error": "",
+                "message": "nodriver image search succeeded",
+            }
+        )
+        return 0
+    except Exception as exc:
+        emit(
+            {
+                "success": False,
+                "ai_answer": "",
+                "sources": [],
+                "error": f"nodriver image search failed: {exc}",
+                "message": "unexpected exception",
+            }
+        )
+        return 1
+    finally:
+        if browser is not None:
+            try:
+                stop_ret = browser.stop()
+                if asyncio.iscoroutine(stop_ret):
+                    await asyncio.wait_for(stop_ret, timeout=8)
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        emit(
+            {
+                "success": False,
+                "ai_answer": "",
+                "sources": [],
+                "error": "interrupted by user",
+                "message": "interrupted",
+            }
+        )
+        raise SystemExit(1)
+`;
+
+const NODRIVER_AUTH_BRIDGE_SCRIPT = String.raw`#!/usr/bin/env python3
+import argparse
+import asyncio
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+CAPTCHA_KEYWORDS = [
+    "unusual traffic",
+    "automated requests",
+    "sorry/index",
+    "recaptcha",
+    "验证您是真人",
+    "我们的系统检测到",
+]
+
+PASS_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+}
+
+
+def emit(success: bool, state_saved: bool, message: str) -> None:
+    print(
+        json.dumps(
+            {
+                "success": bool(success),
+                "state_saved": bool(state_saved),
+                "message": message,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def normalize_same_site(value) -> str:
+    if value is None:
+        return "Lax"
+    normalized = str(value).strip().lower()
+    if normalized == "strict":
+        return "Strict"
+    if normalized == "none":
+        return "None"
+    return "Lax"
+
+
+def cookie_to_playwright(cookie):
+    name = getattr(cookie, "name", None) or (cookie.get("name") if isinstance(cookie, dict) else None)
+    value = getattr(cookie, "value", None) or (cookie.get("value") if isinstance(cookie, dict) else None)
+    domain = getattr(cookie, "domain", None) or (cookie.get("domain") if isinstance(cookie, dict) else None)
+    path = getattr(cookie, "path", None) or (cookie.get("path") if isinstance(cookie, dict) else "/")
+    expires = getattr(cookie, "expires", None) if not isinstance(cookie, dict) else cookie.get("expires")
+    http_only = getattr(cookie, "http_only", None) if not isinstance(cookie, dict) else cookie.get("httpOnly")
+    secure = getattr(cookie, "secure", None) if not isinstance(cookie, dict) else cookie.get("secure")
+    same_site = getattr(cookie, "same_site", None) if not isinstance(cookie, dict) else cookie.get("sameSite")
+
+    if not name or value is None or not domain:
+        return None
+
+    try:
+        expires_value = float(expires) if expires is not None else -1
+    except Exception:
+        expires_value = -1
+    if expires_value > 1e12:
+        expires_value = expires_value / 1000.0
+    if expires_value <= 0:
+        expires_value = -1
+
+    return {
+        "name": str(name),
+        "value": str(value),
+        "domain": str(domain),
+        "path": str(path or "/"),
+        "expires": expires_value,
+        "httpOnly": bool(http_only),
+        "secure": bool(secure),
+        "sameSite": normalize_same_site(same_site),
+    }
+
+
+def is_blocked_page(content: str, current_url: str) -> bool:
+    text = (content or "").lower()
+    target = (current_url or "").lower()
+    if "sorry/index" in target:
+        return True
+    return any(keyword in text for keyword in CAPTCHA_KEYWORDS)
+
+
+def has_pass_cookie(raw_cookies) -> bool:
+    for cookie in raw_cookies or []:
+        if isinstance(cookie, dict):
+            name = str(cookie.get("name", ""))
+        else:
+            name = str(getattr(cookie, "name", ""))
+        if name in PASS_COOKIE_NAMES:
+            return True
+    return False
+
+
+async def fetch_raw_cookies(tab, browser):
+    try:
+        import nodriver.cdp.network as cdp_network
+
+        return await tab.send(cdp_network.get_all_cookies()) or []
+    except Exception:
+        try:
+            return await browser.cookies.get_all()
+        except Exception:
+            return []
+
+
+def save_storage_state(raw_cookies, state_path: str) -> bool:
+    cookies = []
+    for raw_cookie in raw_cookies or []:
+        converted = cookie_to_playwright(raw_cookie)
+        if converted:
+            cookies.append(converted)
+    if not cookies:
+        return False
+    payload = {"cookies": cookies, "origins": []}
+    Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(state_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return True
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--state-path", required=True)
+    parser.add_argument("--wait-seconds", type=int, default=300)
+    parser.add_argument("--proxy", default="")
+    args = parser.parse_args()
+
+    try:
+        import nodriver as uc
+    except Exception as exc:
+        emit(False, False, f"nodriver import failed: {exc}")
+        return 2
+
+    user_data_dir = Path.home() / ".huge-ai-search" / "nodriver_profile"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+
+    is_ci = bool(os.environ.get("CI")) or bool(os.environ.get("GITHUB_ACTIONS"))
+    is_root = bool(hasattr(os, "geteuid") and os.geteuid() == 0)
+    is_windows = os.name == "nt"
+    use_sandbox = not (is_ci or is_root or is_windows)
+
+    browser_args = [
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-infobars",
+        "--disable-popup-blocking",
+        "--window-size=1920,1080",
+        "--start-maximized",
+        "--no-first-run",
+        "--no-service-autorun",
+        "--password-store=basic",
+    ]
+    if args.proxy:
+        browser_args.append(f"--proxy-server={args.proxy}")
+
+    browser = None
+    try:
+        config = uc.Config(
+            headless=False,
+            sandbox=use_sandbox,
+            browser_args=browser_args,
+            user_data_dir=str(user_data_dir),
+        )
+        browser = await uc.start(config=config)
+        tab = await browser.get(args.url)
+        await asyncio.sleep(1.5)
+
+        deadline = time.monotonic() + max(10, int(args.wait_seconds))
+        timeout_reason = "verification not completed"
+
+        while time.monotonic() < deadline:
+            content = ""
+            current_url = ""
+            try:
+                content = await tab.get_content()
+            except Exception:
+                content = ""
+            try:
+                current_url = str(getattr(tab.target, "url", "") or "")
+            except Exception:
+                current_url = ""
+
+            raw_cookies = await fetch_raw_cookies(tab, browser)
+            blocked = is_blocked_page(content, current_url)
+            passed = has_pass_cookie(raw_cookies)
+
+            if passed and not blocked:
+                if save_storage_state(raw_cookies, args.state_path):
+                    emit(True, True, "verification passed and storage state saved")
+                    return 0
+                timeout_reason = "pass cookies detected but serialization failed"
+            else:
+                if blocked:
+                    timeout_reason = "still blocked by captcha/suspicious traffic page"
+                else:
+                    timeout_reason = "login cookies not ready"
+
+            await asyncio.sleep(2)
+
+        raw_cookies = await fetch_raw_cookies(tab, browser)
+        if save_storage_state(raw_cookies, args.state_path):
+            emit(True, True, "timeout reached; current cookies saved")
+            return 0
+
+        emit(False, False, f"verification timeout: {timeout_reason}")
+        return 1
+    except Exception as exc:
+        emit(False, False, f"nodriver auth flow failed: {exc}")
+        return 1
+    finally:
+        if browser is not None:
+            try:
+                stop_ret = browser.stop()
+                if asyncio.iscoroutine(stop_ret):
+                    await asyncio.wait_for(stop_ret, timeout=8)
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        emit(False, False, "interrupted by user")
+        raise SystemExit(1)
+`;
 
 // ============================================
 // 全局 CAPTCHA 处理锁
@@ -245,12 +1918,7 @@ function releaseCaptchaLock(): void {
 }
 
 export class AISearcher {
-  private static readonly DEFAULT_USER_AGENT =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
   private static readonly BASE_LAUNCH_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--disable-infobars",
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
@@ -326,32 +1994,58 @@ export class AISearcher {
     );
   }
 
+  private isTruthyEnv(value?: string): boolean {
+    if (!value) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+
   /**
-   * 检测系统代理设置
-   * 支持环境变量和常见代理端口检测（Clash、V2Ray/Xray、Sing-Box、Surge 等）
+   * 检测代理设置
+   * 默认不启用系统代理继承与本地端口自动探测，避免与手工浏览器网络路径不一致。
    */
   private async detectProxy(): Promise<string | undefined> {
     console.error("开始检测代理...");
-    
-    // 1. 检查环境变量
-    const envVars = [
-      "HTTP_PROXY",
-      "http_proxy",
-      "HTTPS_PROXY",
-      "https_proxy",
-      "ALL_PROXY",
-      "all_proxy",
-    ];
-    for (const envVar of envVars) {
-      const proxy = process.env[envVar];
-      if (proxy) {
-        console.error(`从环境变量 ${envVar} 检测到代理: ${proxy}`);
-        return proxy;
-      }
-    }
-    console.error("环境变量中未找到代理配置");
 
-    // 2. 检测常见代理端口
+    // 1. 应用级显式代理（最高优先级）
+    const explicitProxy = (process.env.HUGE_AI_SEARCH_PROXY || "").trim();
+    if (explicitProxy) {
+      console.error(`使用显式代理 HUGE_AI_SEARCH_PROXY: ${explicitProxy}`);
+      return explicitProxy;
+    }
+
+    // 2. 可选：继承系统代理环境变量（默认关闭）
+    const useSystemProxy = this.isTruthyEnv(process.env.HUGE_AI_SEARCH_USE_SYSTEM_PROXY);
+    if (useSystemProxy) {
+      const envVars = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+      ];
+      for (const envVar of envVars) {
+        const proxy = (process.env[envVar] || "").trim();
+        if (proxy) {
+          console.error(`从环境变量 ${envVar} 检测到代理: ${proxy}`);
+          return proxy;
+        }
+      }
+      console.error("已启用系统代理继承，但环境变量中未找到代理配置");
+    } else {
+      console.error("未启用系统代理继承（设置 HUGE_AI_SEARCH_USE_SYSTEM_PROXY=1 可开启）");
+    }
+
+    // 3. 可选：检测常见代理端口（默认关闭）
+    const autoDetectProxy = this.isTruthyEnv(process.env.HUGE_AI_SEARCH_AUTO_DETECT_PROXY);
+    if (!autoDetectProxy) {
+      console.error("未启用自动代理端口探测（设置 HUGE_AI_SEARCH_AUTO_DETECT_PROXY=1 可开启）");
+      return undefined;
+    }
+
+    console.error("已启用自动代理端口探测，开始检测本地常见代理端口...");
+
     type PortCandidate = {
       port: number;
       proxyUrl?: string;
@@ -412,7 +2106,7 @@ export class AISearcher {
       return proxyUrl;
     }
 
-    console.error("未检测到任何代理");
+    console.error("自动探测未检测到可用代理");
     return undefined;
   }
 
@@ -497,6 +2191,486 @@ export class AISearcher {
     return undefined;
   }
 
+  private shouldUseNodriverAuth(): boolean {
+    const driver = (process.env.HUGE_AI_SEARCH_AUTH_DRIVER || "nodriver").trim().toLowerCase();
+    return driver === "nodriver";
+  }
+
+  private getNodriverWaitSeconds(): number {
+    const configured = Number(process.env.HUGE_AI_SEARCH_NODRIVER_WAIT_SECONDS || "");
+    if (Number.isFinite(configured) && configured >= 30 && configured <= 900) {
+      return Math.floor(configured);
+    }
+    return NODRIVER_DEFAULT_WAIT_SECONDS;
+  }
+
+  private ensureNodriverBridgeScript(): string {
+    const runtimeDir = path.join(os.tmpdir(), ".huge-ai-search");
+    if (!fs.existsSync(runtimeDir)) {
+      fs.mkdirSync(runtimeDir, { recursive: true });
+    }
+    const scriptPath = path.join(runtimeDir, NODRIVER_SCRIPT_FILE_NAME);
+    try {
+      const existing = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, "utf8") : "";
+      if (existing !== NODRIVER_AUTH_BRIDGE_SCRIPT) {
+        fs.writeFileSync(scriptPath, NODRIVER_AUTH_BRIDGE_SCRIPT, "utf8");
+      }
+    } catch (error) {
+      throw new Error(`准备 nodriver 桥接脚本失败: ${error}`);
+    }
+    return scriptPath;
+  }
+
+  private resolvePythonCandidates(): Array<{ command: string; argsPrefix: string[] }> {
+    const configured = (process.env.HUGE_AI_SEARCH_NODRIVER_PYTHON || "").trim();
+    const candidates: Array<{ command: string; argsPrefix: string[] }> = [];
+
+    if (configured) {
+      candidates.push({ command: configured, argsPrefix: [] });
+      return candidates;
+    }
+
+    if (process.platform === "win32") {
+      candidates.push({ command: "python", argsPrefix: [] });
+      candidates.push({ command: "py", argsPrefix: ["-3"] });
+      candidates.push({ command: "py", argsPrefix: [] });
+      return candidates;
+    }
+
+    candidates.push({ command: "python3", argsPrefix: [] });
+    candidates.push({ command: "python", argsPrefix: [] });
+    return candidates;
+  }
+
+  private runProcess(
+    command: string,
+    args: string[],
+    timeoutMs: number
+  ): Promise<ProcessExecResult> {
+    return new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+
+      let child;
+      try {
+        child = spawn(command, args, {
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PYTHONIOENCODING: "utf-8",
+          },
+        });
+      } catch (error) {
+        resolve({
+          exitCode: null,
+          stdout: "",
+          stderr: "",
+          error: error instanceof Error ? error.message : String(error),
+          timedOut: false,
+        });
+        return;
+      }
+
+      const finish = (payload: ProcessExecResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(payload);
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore
+        }
+        setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }, 1200);
+      }, timeoutMs);
+
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      });
+
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      });
+
+      child.on("error", (error) => {
+        finish({
+          exitCode: null,
+          stdout,
+          stderr,
+          error: error instanceof Error ? error.message : String(error),
+          timedOut,
+        });
+      });
+
+      child.on("close", (exitCode) => {
+        finish({
+          exitCode,
+          stdout,
+          stderr,
+          timedOut,
+        });
+      });
+    });
+  }
+
+  private isCommandUnavailableError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("enoent") ||
+      lower.includes("is not recognized as an internal or external command") ||
+      lower.includes("command not found") ||
+      lower.includes("no such file or directory")
+    );
+  }
+
+  private isNodriverImportFailure(message: string): boolean {
+    return message.toLowerCase().includes("nodriver import failed");
+  }
+
+  private parseNodriverBridgeResult(stdout: string, stderr: string): NodriverBridgeResult {
+    const combinedLines = `${stdout || ""}\n${stderr || ""}`
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (let i = combinedLines.length - 1; i >= 0; i--) {
+      const line = combinedLines[i];
+      if (!(line.startsWith("{") && line.endsWith("}"))) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as Partial<NodriverBridgeResult> & {
+          state_saved?: boolean;
+          stateSaved?: boolean;
+        };
+        return {
+          success: Boolean(parsed.success),
+          stateSaved: Boolean(parsed.stateSaved ?? parsed.state_saved),
+          message:
+            typeof parsed.message === "string" && parsed.message.trim()
+              ? parsed.message.trim()
+              : "nodriver 桥接返回空消息",
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    const fallback = (stderr || stdout || "").trim();
+    return {
+      success: false,
+      stateSaved: false,
+      message: fallback ? fallback.slice(0, 500) : "nodriver 桥接未返回可解析结果",
+    };
+  }
+
+  private async runNodriverAuthFlow(targetUrl: string): Promise<NodriverBridgeResult> {
+    if (!this.shouldUseNodriverAuth()) {
+      return {
+        success: false,
+        stateSaved: false,
+        message: "nodriver 认证流程已禁用（HUGE_AI_SEARCH_AUTH_DRIVER != nodriver）",
+      };
+    }
+
+    const storageStatePath = this.getSharedStorageStatePath();
+    const sharedDir = path.dirname(storageStatePath);
+    if (!fs.existsSync(sharedDir)) {
+      fs.mkdirSync(sharedDir, { recursive: true });
+    }
+
+    const scriptPath = this.ensureNodriverBridgeScript();
+    const waitSeconds = this.getNodriverWaitSeconds();
+    const timeoutMs = Math.max((waitSeconds + 45) * 1000, 90_000);
+    const proxy = await this.detectProxy();
+
+    const baseArgs = [
+      scriptPath,
+      "--url",
+      targetUrl,
+      "--state-path",
+      storageStatePath,
+      "--wait-seconds",
+      `${waitSeconds}`,
+    ];
+    if (proxy) {
+      baseArgs.push("--proxy", proxy);
+    }
+
+    let lastErrorMessage = "未执行 nodriver 认证流程";
+    for (const candidate of this.resolvePythonCandidates()) {
+      const fullArgs = [...candidate.argsPrefix, ...baseArgs];
+      log(
+        "CAPTCHA",
+        `尝试 nodriver 认证: ${candidate.command} ${fullArgs
+          .map((arg) => (arg.includes(" ") ? `"${arg}"` : arg))
+          .join(" ")}`
+      );
+
+      const execResult = await this.runProcess(candidate.command, fullArgs, timeoutMs);
+      const parsed = this.parseNodriverBridgeResult(execResult.stdout, execResult.stderr);
+      const shouldTryNextInterpreter =
+        (execResult.error ? this.isCommandUnavailableError(execResult.error) : false) ||
+        this.isNodriverImportFailure(parsed.message || "");
+
+      if (execResult.timedOut) {
+        lastErrorMessage = `nodriver 认证超时 (${waitSeconds}s)`;
+      } else if (execResult.error) {
+        lastErrorMessage = `启动失败: ${execResult.error}`;
+      } else if (execResult.exitCode !== 0) {
+        lastErrorMessage = parsed.message || `退出码 ${execResult.exitCode}`;
+      } else if (parsed.success && parsed.stateSaved && fs.existsSync(storageStatePath)) {
+        log("CAPTCHA", `nodriver 认证成功，状态已保存: ${storageStatePath}`);
+        return parsed;
+      } else {
+        lastErrorMessage = parsed.message || "nodriver 执行完成但未保存认证状态";
+      }
+
+      log(
+        "CAPTCHA",
+        `nodriver 认证失败（${candidate.command}）: ${lastErrorMessage}`
+      );
+
+      if (!shouldTryNextInterpreter) {
+        break;
+      }
+    }
+
+    return {
+      success: false,
+      stateSaved: false,
+      message: lastErrorMessage,
+    };
+  }
+
+  private shouldUseNodriverImageSearch(): boolean {
+    const driver = (process.env.HUGE_AI_SEARCH_IMAGE_DRIVER || "nodriver")
+      .trim()
+      .toLowerCase();
+    return driver === "nodriver";
+  }
+
+  private getNodriverImageSearchTimeoutSeconds(): number {
+    const configured = Number(
+      process.env.HUGE_AI_SEARCH_NODRIVER_IMAGE_TIMEOUT_SECONDS || ""
+    );
+    if (Number.isFinite(configured) && configured >= 25 && configured <= 300) {
+      return Math.floor(configured);
+    }
+    return NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS;
+  }
+
+  private useNodriverImageSearchHeadless(): boolean {
+    if (process.env.HUGE_AI_SEARCH_NODRIVER_HEADLESS === undefined) {
+      return NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT;
+    }
+    return this.isTruthyEnv(process.env.HUGE_AI_SEARCH_NODRIVER_HEADLESS);
+  }
+
+  private ensureNodriverImageSearchScript(): string {
+    const runtimeDir = path.join(os.tmpdir(), ".huge-ai-search");
+    if (!fs.existsSync(runtimeDir)) {
+      fs.mkdirSync(runtimeDir, { recursive: true });
+    }
+    const scriptNameExt = path.extname(NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME) || ".py";
+    const scriptNameBase = path.basename(
+      NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME,
+      scriptNameExt
+    );
+    const scriptHash = createHash("sha1")
+      .update(NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT)
+      .digest("hex")
+      .slice(0, 12);
+    const scriptPath = path.join(runtimeDir, `${scriptNameBase}_${scriptHash}${scriptNameExt}`);
+    try {
+      const existing = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, "utf8") : "";
+      if (existing !== NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT) {
+        fs.writeFileSync(scriptPath, NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT, "utf8");
+      }
+    } catch (error) {
+      throw new Error(`准备 nodriver 图片桥接脚本失败: ${error}`);
+    }
+    return scriptPath;
+  }
+
+  private parseNodriverImageSearchResult(
+    stdout: string,
+    stderr: string
+  ): NodriverImageSearchResult {
+    const combinedLines = `${stdout || ""}\n${stderr || ""}`
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const fallbackError = (stderr || stdout || "").trim();
+
+    for (let i = combinedLines.length - 1; i >= 0; i--) {
+      const line = combinedLines[i];
+      if (!(line.startsWith("{") && line.endsWith("}"))) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as {
+          success?: boolean;
+          aiAnswer?: string;
+          ai_answer?: string;
+          sources?: Array<{ title?: string; url?: string; snippet?: string }>;
+          error?: string;
+          message?: string;
+        };
+
+        const sources = Array.isArray(parsed.sources)
+          ? parsed.sources
+              .filter((source) => source && typeof source === "object")
+              .map((source) => ({
+                title: typeof source.title === "string" ? source.title : "",
+                url: typeof source.url === "string" ? source.url : "",
+                snippet: typeof source.snippet === "string" ? source.snippet : "",
+              }))
+              .filter((source) => Boolean(source.url))
+          : [];
+
+        const aiAnswer =
+          typeof parsed.aiAnswer === "string"
+            ? parsed.aiAnswer
+            : typeof parsed.ai_answer === "string"
+              ? parsed.ai_answer
+              : "";
+
+        return {
+          success: Boolean(parsed.success),
+          aiAnswer: aiAnswer.trim(),
+          sources,
+          error: typeof parsed.error === "string" ? parsed.error : "",
+          message: typeof parsed.message === "string" ? parsed.message : "",
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    return {
+      success: false,
+      aiAnswer: "",
+      sources: [],
+      error: fallbackError || "nodriver 图片桥接未返回可解析结果",
+      message: "",
+    };
+  }
+
+  private async runNodriverImageSearch(
+    query: string,
+    language: string,
+    imagePath: string
+  ): Promise<SearchResult> {
+    const result: SearchResult = {
+      success: false,
+      query,
+      aiAnswer: "",
+      sources: [],
+      error: "",
+    };
+
+    if (!this.shouldUseNodriverImageSearch()) {
+      result.error = "nodriver 图片搜索已禁用（HUGE_AI_SEARCH_IMAGE_DRIVER != nodriver）";
+      return result;
+    }
+
+    const scriptPath = this.ensureNodriverImageSearchScript();
+    const timeoutSeconds = this.getNodriverImageSearchTimeoutSeconds();
+    const timeoutMs = Math.max((timeoutSeconds + 30) * 1000, 90_000);
+    const absoluteImagePath = path.resolve(imagePath);
+    const proxy = await this.detectProxy();
+
+    const baseArgs = [
+      scriptPath,
+      "--url",
+      this.buildAiModeUrl(language),
+      "--query",
+      query,
+      "--language",
+      language,
+      "--image-path",
+      absoluteImagePath,
+      "--timeout-seconds",
+      `${timeoutSeconds}`,
+    ];
+    if (proxy) {
+      baseArgs.push("--proxy", proxy);
+    }
+    if (this.useNodriverImageSearchHeadless()) {
+      baseArgs.push("--headless");
+    }
+
+    let lastError = "未执行 nodriver 图片搜索";
+
+    for (const candidate of this.resolvePythonCandidates()) {
+      const args = [...candidate.argsPrefix, ...baseArgs];
+      log(
+        "INFO",
+        `尝试 nodriver 图片搜索: ${candidate.command} ${args
+          .map((arg) => (arg.includes(" ") ? `"${arg}"` : arg))
+          .join(" ")}`
+      );
+
+      const execResult = await this.runProcess(candidate.command, args, timeoutMs);
+      const parsed = this.parseNodriverImageSearchResult(
+        execResult.stdout,
+        execResult.stderr
+      );
+
+      const parsedFailureText = `${parsed.error || ""} ${parsed.message || ""}`.trim();
+      const shouldTryNextInterpreter =
+        (execResult.error ? this.isCommandUnavailableError(execResult.error) : false) ||
+        this.isNodriverImportFailure(parsedFailureText);
+
+      if (execResult.timedOut) {
+        lastError = `nodriver 图片搜索超时 (${timeoutSeconds}s)`;
+      } else if (execResult.error) {
+        lastError = `nodriver 启动失败: ${execResult.error}`;
+      } else if (execResult.exitCode !== 0) {
+        lastError = parsed.error || parsed.message || `退出码 ${execResult.exitCode}`;
+      } else if (parsed.success && parsed.aiAnswer.trim()) {
+        result.success = true;
+        result.aiAnswer = parsed.aiAnswer.trim();
+        result.sources = parsed.sources;
+        result.error = "";
+        log(
+          "INFO",
+          `nodriver 图片搜索成功: answerLen=${result.aiAnswer.length}, sources=${result.sources.length}`
+        );
+        return result;
+      } else {
+        lastError = parsed.error || parsed.message || "nodriver 图片搜索返回空回答";
+      }
+
+      log(
+        "ERROR",
+        `nodriver 图片搜索失败（${candidate.command}）: ${lastError}`
+      );
+
+      if (!shouldTryNextInterpreter) {
+        break;
+      }
+    }
+
+    result.error = lastError;
+    return result;
+  }
+
   private buildLaunchOptions(
     executablePath: string,
     headless: boolean,
@@ -511,6 +2685,7 @@ export class AISearcher {
       headless,
       executablePath,
       args,
+      ignoreDefaultArgs: ["--enable-automation"],
     };
 
     if (proxy) {
@@ -525,7 +2700,6 @@ export class AISearcher {
   ): BrowserContextOptions {
     const contextOptions: BrowserContextOptions = {
       viewport: null,
-      userAgent: AISearcher.DEFAULT_USER_AGENT,
     };
 
     if (storageStatePath && fs.existsSync(storageStatePath)) {
@@ -613,9 +2787,6 @@ export class AISearcher {
         viewport: this.headless ? { width: 1920, height: 1080 } : null,
         locale: language,
       };
-      if (!this.headless) {
-        contextOptions.userAgent = AISearcher.DEFAULT_USER_AGENT;
-      }
 
       // 尝试加载共享的认证状态
       const storageStatePath = this.loadStorageState();
@@ -844,7 +3015,7 @@ export class AISearcher {
     let stableCount = 0;
     const stableThreshold = 2;
     const checkInterval = 500;
-    const minContentLength = 300;
+    const minContentLength = maxWaitSeconds >= 20 ? 120 : 60;
 
     for (let i = 0; i < maxWaitSeconds * 2; i++) {
       try {
@@ -1332,6 +3503,25 @@ export class AISearcher {
     // 关闭当前的 headless 浏览器
     await this.close();
 
+    if (this.shouldUseNodriverAuth()) {
+      log("CAPTCHA", "优先使用 nodriver 执行人工验证流程...");
+      try {
+        const nodriverResult = await this.runNodriverAuthFlow(url);
+        if (nodriverResult.success && nodriverResult.stateSaved) {
+          result.error = "验证已完成，请重新搜索";
+          log("CAPTCHA", `nodriver 验证成功: ${nodriverResult.message}`);
+          releaseCaptchaLock();
+          return result;
+        }
+        log(
+          "CAPTCHA",
+          `nodriver 验证失败，将回退 Playwright 验证窗口: ${nodriverResult.message}`
+        );
+      } catch (error) {
+        log("CAPTCHA", `nodriver 验证流程异常，将回退 Playwright: ${error}`);
+      }
+    }
+
     try {
       const executablePath = this.findBrowser();
       log("CAPTCHA", `使用浏览器: ${executablePath}`);
@@ -1498,22 +3688,49 @@ export class AISearcher {
    * 查找追问输入框
    */
   private async findFollowUpInput(): Promise<any | null> {
+    const input = await this.pickBestVisibleInput(FOLLOW_UP_SELECTORS);
+    if (input) {
+      console.error("找到追问输入框");
+      return input;
+    }
+    console.error("未找到追问输入框");
+    return null;
+  }
+
+  private async pickBestVisibleInput(selectors: string[]): Promise<any | null> {
     if (!this.page) return null;
 
-    for (const selector of FOLLOW_UP_SELECTORS) {
+    let best: { element: any; score: number } | null = null;
+    for (const selector of selectors) {
       try {
-        const element = await this.page.$(selector);
-        if (element && (await element.isVisible())) {
-          console.error(`找到追问输入框: ${selector}`);
-          return element;
+        const elements = await this.page.$$(selector);
+        for (const element of elements) {
+          if (!(await element.isVisible())) {
+            continue;
+          }
+          const score = (await element.evaluate(`
+            (el) => {
+              const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0 };
+              const inAiContainer = Boolean(el.closest && el.closest('div[data-subtree="aimc"]'));
+              const tag = String(el.tagName || "").toLowerCase();
+              const name = typeof el.name === "string" ? el.name : "";
+              const isEditable = Boolean(el.isContentEditable);
+              const editableBonus = isEditable ? 240 : tag === "textarea" ? 180 : 120;
+              const lowerHalfBonus = rect.top > window.innerHeight * 0.45 ? 200 : 0;
+              const inAiBonus = inAiContainer ? 1200 : 0;
+              const nonQBonus = name === "q" ? 0 : 40;
+              return inAiBonus + lowerHalfBonus + editableBonus + nonQBonus + Math.max(0, rect.top || 0);
+            }
+          `)) as number;
+          if (!best || score > best.score) {
+            best = { element, score };
+          }
         }
       } catch {
         continue;
       }
     }
-
-    console.error("未找到追问输入框");
-    return null;
+    return best?.element ?? null;
   }
 
   /**
@@ -1524,14 +3741,17 @@ export class AISearcher {
 
     const jsFindInput = `
     () => {
-      const textareas = document.querySelectorAll('textarea');
-      for (const ta of textareas) {
-        if (ta.name === 'q') continue;
-        if (ta.offsetParent !== null) return true;
+      function isVisible(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
       }
-      const editables = document.querySelectorAll('[contenteditable="true"]');
-      for (const el of editables) {
-        if (el.offsetParent !== null) return true;
+      const root = document.querySelector('div[data-subtree="aimc"]') || document;
+      const candidates = root.querySelectorAll('textarea, input[type="text"], [contenteditable="true"], [role="textbox"]');
+      for (const candidate of candidates) {
+        if (isVisible(candidate)) return true;
       }
       return false;
     }
@@ -1551,24 +3771,147 @@ export class AISearcher {
 
     const jsFillAndSubmit = `
     (query) => {
-      const textareas = document.querySelectorAll('textarea');
-      for (const ta of textareas) {
-        if (ta.name === 'q') continue;
-        if (ta.offsetParent !== null) {
-          ta.value = query;
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          const form = ta.closest('form');
-          if (form) {
-            const submitBtn = form.querySelector('button[type="submit"], button:not([type])');
-            if (submitBtn) {
-              submitBtn.click();
-              return true;
-            }
+      function isVisible(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+
+      function isEnabled(element) {
+        if (!element) return false;
+        if ('disabled' in element && element.disabled) return false;
+        if (element.getAttribute && element.getAttribute('aria-disabled') === 'true') return false;
+        return true;
+      }
+
+      function rankInput(element) {
+        const rect = element.getBoundingClientRect();
+        const inAi = Boolean(element.closest('div[data-subtree="aimc"]'));
+        const name = element.name || '';
+        const lowerHalf = rect.top > window.innerHeight * 0.45 ? 200 : 0;
+        return (inAi ? 10000 : 0) + lowerHalf + rect.top + (name === 'q' ? 0 : 30);
+      }
+
+      function collectInputs(root) {
+        const selectors = 'textarea, input[type="text"], [contenteditable="true"], [role="textbox"]';
+        const inputs = Array.from((root || document).querySelectorAll(selectors));
+        return inputs.filter((input) => isVisible(input) && isEnabled(input));
+      }
+
+      function tryClickSendButton(scope) {
+        const hints = ["send", "submit", "发送", "提交", "ask", "提问", "询问", "follow"];
+        const excludeHints = [
+          "开始新的搜索",
+          "new search",
+          "重新搜索",
+          "clear",
+          "重置",
+          "删除",
+          "移除",
+          "关闭",
+          "上传",
+          "更多输入",
+        ];
+
+        function isDangerousAction(element) {
+          const parts = [
+            element.getAttribute("aria-label") || "",
+            element.getAttribute("title") || "",
+            element.textContent || "",
+          ].join(" ").toLowerCase();
+          return excludeHints.some((hint) => parts.includes(hint));
+        }
+
+        function isLikelySubmit(element) {
+          const parts = [
+            element.getAttribute("aria-label") || "",
+            element.getAttribute("title") || "",
+            element.getAttribute("name") || "",
+            element.getAttribute("data-testid") || "",
+            element.textContent || "",
+          ].join(" ").toLowerCase();
+          return hints.some((hint) => parts.includes(hint));
+        }
+
+        const selectors = [
+          'button[aria-label*="发送"]',
+          'button[aria-label*="Send"]',
+          'button[aria-label*="submit"]',
+          'button[aria-label*="提交"]',
+          '[role="button"][aria-label*="提交"]',
+          '[role="button"][aria-label*="发送"]',
+          '[role="button"][aria-label*="Send"]',
+          '[role="button"][aria-label*="submit"]',
+          'button[type="submit"]',
+        ];
+        for (const selector of selectors) {
+          const candidates = Array.from((scope || document).querySelectorAll(selector));
+          for (const btn of candidates) {
+            if (!isVisible(btn)) continue;
+            if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+            if (isDangerousAction(btn)) continue;
+            btn.click();
+            return true;
           }
-          ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        }
+
+        const looseCandidates = Array.from((scope || document).querySelectorAll('button, [role="button"]'));
+        const visibleEnabled = looseCandidates.filter(
+          (btn) => isVisible(btn) && isEnabled(btn) && isLikelySubmit(btn) && !isDangerousAction(btn)
+        );
+        if (visibleEnabled.length > 0) {
+          visibleEnabled.sort((a, b) => {
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            return (rectB.right + rectB.top) - (rectA.right + rectA.top);
+          });
+          visibleEnabled[0].click();
           return true;
         }
+        return false;
       }
+
+      function setTextareaValue(target, value) {
+        const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        if (descriptor && descriptor.set) {
+          descriptor.set.call(target, value);
+        } else {
+          target.value = value;
+        }
+      }
+
+      const aiRoot = document.querySelector('div[data-subtree="aimc"]') || document;
+      let candidates = collectInputs(aiRoot);
+      if (!candidates.length) {
+        candidates = collectInputs(document);
+      }
+      candidates.sort((a, b) => rankInput(b) - rankInput(a));
+
+      for (const target of candidates) {
+        target.focus();
+        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+          setTextareaValue(target, query);
+        } else {
+          target.textContent = query;
+        }
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const localScope = target.closest('form') || target.closest('div[data-subtree="aimc"]') || aiRoot;
+        if (tryClickSendButton(localScope) || tryClickSendButton(aiRoot) || tryClickSendButton(document)) {
+          return true;
+        }
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        target.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, bubbles: true }));
+        target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+        if (tryClickSendButton(localScope) || tryClickSendButton(document)) {
+          return true;
+        }
+        return true;
+      }
+
       return false;
     }
     `;
@@ -1581,26 +3924,150 @@ export class AISearcher {
   }
 
   private async findPromptInput(): Promise<any | null> {
-    if (!this.page) return null;
-
-    for (const selector of PROMPT_INPUT_SELECTORS) {
-      try {
-        const elements = await this.page.$$(selector);
-        for (const element of elements) {
-          if (await element.isVisible()) {
-            return element;
-          }
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    return null;
+    return this.pickBestVisibleInput(PROMPT_INPUT_SELECTORS);
   }
 
-  private async clickPromptSubmitButton(): Promise<boolean> {
+  private async clickPromptSubmitButton(scopeInput?: any): Promise<boolean> {
     if (!this.page) return false;
+
+    // 优先在当前输入框附近点击，避免误点到页面工具栏按钮。
+    if (scopeInput) {
+      try {
+        const clicked = (await scopeInput.evaluate(
+          `
+          (input, payload) => {
+            const selectors = Array.isArray(payload?.selectors) ? payload.selectors : [];
+            const hints = Array.isArray(payload?.hints) ? payload.hints : [];
+            const excludeHints = Array.isArray(payload?.excludeHints)
+              ? payload.excludeHints
+              : [];
+            function isVisible(element) {
+              const style = window.getComputedStyle(element);
+              if (style.visibility === "hidden" || style.display === "none") return false;
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            }
+            function isEnabled(element) {
+              if (!element) return false;
+              if (element.getAttribute("aria-disabled") === "true") return false;
+              if ("disabled" in element && element.disabled) return false;
+              return true;
+            }
+            function isLikelySubmit(element) {
+              const parts = [
+                element.getAttribute("aria-label") || "",
+                element.getAttribute("title") || "",
+                element.getAttribute("name") || "",
+                element.getAttribute("data-testid") || "",
+                element.textContent || "",
+              ].join(" ").toLowerCase();
+              return hints.some((hint) => parts.includes(hint));
+            }
+            function isDangerousAction(element) {
+              const parts = [
+                element.getAttribute("aria-label") || "",
+                element.getAttribute("title") || "",
+                element.textContent || "",
+              ].join(" ").toLowerCase();
+              return excludeHints.some((hint) => parts.includes(hint));
+            }
+
+            const localScope =
+              input.closest("form") ||
+              input.closest("div[data-subtree='aimc']") ||
+              document.querySelector("div[data-subtree='aimc']") ||
+              document;
+
+            for (const selector of selectors) {
+              let buttons = [];
+              try {
+                buttons = Array.from(localScope.querySelectorAll(selector));
+              } catch {
+                continue;
+              }
+              for (const button of buttons) {
+                if (!isVisible(button) || !isEnabled(button)) continue;
+                if (isDangerousAction(button)) continue;
+                button.click();
+                return true;
+              }
+            }
+
+            const looseButtons = Array.from(
+              localScope.querySelectorAll("button, [role='button']")
+            ).filter(
+              (button) =>
+                isVisible(button) &&
+                isEnabled(button) &&
+                isLikelySubmit(button) &&
+                !isDangerousAction(button)
+            );
+
+            if (!looseButtons.length) {
+              const iconButtons = Array.from(
+                localScope.querySelectorAll("button, [role='button']")
+              ).filter((button) => {
+                if (!isVisible(button) || !isEnabled(button)) return false;
+                if (isDangerousAction(button)) return false;
+                const inputText = (
+                  input.value ||
+                  input.textContent ||
+                  input.innerText ||
+                  ""
+                ).trim();
+                if (!inputText) return false;
+                const label = [
+                  button.getAttribute("aria-label") || "",
+                  button.getAttribute("title") || "",
+                  button.textContent || "",
+                ].join(" ").trim();
+                const hasSvg = Boolean(button.querySelector("svg"));
+                return hasSvg && label.length === 0;
+              });
+              if (!iconButtons.length) {
+                return false;
+              }
+              iconButtons.sort((a, b) => {
+                const rectA = a.getBoundingClientRect();
+                const rectB = b.getBoundingClientRect();
+                const bgA = window.getComputedStyle(a).backgroundColor || "";
+                const bgB = window.getComputedStyle(b).backgroundColor || "";
+                const scoreA =
+                  rectA.right +
+                  rectA.bottom +
+                  ((bgA === "rgba(0, 0, 0, 0)" || bgA === "transparent") ? 0 : 5000);
+                const scoreB =
+                  rectB.right +
+                  rectB.bottom +
+                  ((bgB === "rgba(0, 0, 0, 0)" || bgB === "transparent") ? 0 : 5000);
+                return scoreB - scoreA;
+              });
+              iconButtons[0].click();
+              return true;
+            }
+
+            looseButtons.sort((a, b) => {
+              const rectA = a.getBoundingClientRect();
+              const rectB = b.getBoundingClientRect();
+              return rectB.right + rectB.bottom - (rectA.right + rectA.bottom);
+            });
+            looseButtons[0].click();
+            return true;
+          }
+          `,
+          {
+            selectors: PROMPT_SUBMIT_BUTTON_SELECTORS,
+            hints: SUBMIT_BUTTON_HINTS,
+            excludeHints: SUBMIT_BUTTON_EXCLUDE_HINTS,
+          }
+        )) as boolean;
+        if (clicked) {
+          return true;
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     for (const selector of PROMPT_SUBMIT_BUTTON_SELECTORS) {
       try {
@@ -1609,7 +4076,14 @@ export class AISearcher {
           if (!(await button.isVisible())) {
             continue;
           }
-          await button.click();
+          if ((await button.getAttribute("aria-disabled")) === "true") {
+            continue;
+          }
+          const buttonMeta = `${(await button.getAttribute("aria-label")) || ""} ${(await button.getAttribute("title")) || ""} ${(await button.textContent()) || ""}`.toLowerCase();
+          if (SUBMIT_BUTTON_EXCLUDE_HINTS.some((hint) => buttonMeta.includes(hint))) {
+            continue;
+          }
+          await button.click({ timeout: 1500 });
           return true;
         }
       } catch {
@@ -1617,6 +4091,160 @@ export class AISearcher {
       }
     }
 
+    try {
+      const clicked = (await this.page.evaluate(
+        `
+        (hints) => {
+          const excludeHints = [
+            "开始新的搜索",
+            "new search",
+            "重新搜索",
+            "clear",
+            "重置",
+            "删除",
+            "移除",
+            "关闭",
+            "上传",
+            "更多输入",
+          ];
+          function isVisible(element) {
+            const style = window.getComputedStyle(element);
+            if (style.visibility === "hidden" || style.display === "none") return false;
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+          function isEnabled(element) {
+            if (element.getAttribute("aria-disabled") === "true") return false;
+            if ("disabled" in element && element.disabled) return false;
+            return true;
+          }
+          function isLikelySubmit(element) {
+            const parts = [
+              element.getAttribute("aria-label") || "",
+              element.getAttribute("title") || "",
+              element.getAttribute("name") || "",
+              element.getAttribute("data-testid") || "",
+              element.textContent || "",
+            ].join(" ").toLowerCase();
+            return hints.some((hint) => parts.includes(hint));
+          }
+          function isDangerousAction(element) {
+            const parts = [
+              element.getAttribute("aria-label") || "",
+              element.getAttribute("title") || "",
+              element.textContent || "",
+            ].join(" ").toLowerCase();
+            return excludeHints.some((hint) => parts.includes(hint));
+          }
+
+          const aiRoot = document.querySelector("div[data-subtree='aimc']") || document;
+          const candidates = Array.from(
+            aiRoot.querySelectorAll("button, [role='button']")
+          ).filter(
+            (button) =>
+              isVisible(button) &&
+              isEnabled(button) &&
+              isLikelySubmit(button) &&
+              !isDangerousAction(button)
+          );
+
+          if (!candidates.length) {
+            const iconButtons = Array.from(
+              aiRoot.querySelectorAll("button, [role='button']")
+            ).filter((button) => {
+              if (!isVisible(button) || !isEnabled(button)) return false;
+              if (isDangerousAction(button)) return false;
+              const label = [
+                button.getAttribute("aria-label") || "",
+                button.getAttribute("title") || "",
+                button.textContent || "",
+              ].join(" ").trim();
+              const hasSvg = Boolean(button.querySelector("svg"));
+              return hasSvg && label.length === 0;
+            });
+            if (!iconButtons.length) {
+              return false;
+            }
+            iconButtons.sort((a, b) => {
+              const rectA = a.getBoundingClientRect();
+              const rectB = b.getBoundingClientRect();
+              const bgA = window.getComputedStyle(a).backgroundColor || "";
+              const bgB = window.getComputedStyle(b).backgroundColor || "";
+              const scoreA =
+                rectA.right +
+                rectA.bottom +
+                ((bgA === "rgba(0, 0, 0, 0)" || bgA === "transparent") ? 0 : 5000);
+              const scoreB =
+                rectB.right +
+                rectB.bottom +
+                ((bgB === "rgba(0, 0, 0, 0)" || bgB === "transparent") ? 0 : 5000);
+              return scoreB - scoreA;
+            });
+            iconButtons[0].click();
+            return true;
+          }
+
+          candidates.sort((a, b) => {
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            return rectB.right + rectB.bottom - (rectA.right + rectA.bottom);
+          });
+          candidates[0].click();
+          return true;
+        }
+        `,
+        SUBMIT_BUTTON_HINTS
+      )) as boolean;
+      return Boolean(clicked);
+    } catch {
+      return false;
+    }
+  }
+
+  private async hasVisiblePromptSendButton(): Promise<boolean> {
+    if (!this.page) return false;
+    for (const selector of IMAGE_PROMPT_SEND_BUTTON_SELECTORS) {
+      try {
+        const buttons = await this.page.$$(selector);
+        for (const button of buttons) {
+          if (!(await button.isVisible())) {
+            continue;
+          }
+          if ((await button.getAttribute("aria-disabled")) === "true") {
+            continue;
+          }
+          const meta = `${(await button.getAttribute("aria-label")) || ""} ${(await button.textContent()) || ""}`.toLowerCase();
+          if (SUBMIT_BUTTON_EXCLUDE_HINTS.some((hint) => meta.includes(hint))) {
+            continue;
+          }
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  private async hasAnyPromptSendButton(): Promise<boolean> {
+    if (!this.page) return false;
+    for (const selector of IMAGE_PROMPT_SEND_BUTTON_SELECTORS) {
+      try {
+        const buttons = await this.page.$$(selector);
+        for (const button of buttons) {
+          if (!(await button.isVisible())) {
+            continue;
+          }
+          const meta = `${(await button.getAttribute("aria-label")) || ""} ${(await button.textContent()) || ""}`.toLowerCase();
+          if (SUBMIT_BUTTON_EXCLUDE_HINTS.some((hint) => meta.includes(hint))) {
+            continue;
+          }
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
     return false;
   }
 
@@ -1628,23 +4256,61 @@ export class AISearcher {
     const input = await this.findPromptInput();
     if (input) {
       try {
-        await input.click();
-        await this.page.waitForTimeout(200);
-        await input.fill(trimmed);
-        await this.page.waitForTimeout(200);
-        await input.press("Enter");
-        await this.page.waitForTimeout(250);
+        await input.click({ timeout: 1500 });
+        await this.page.waitForTimeout(180);
+        try {
+          await input.fill(trimmed, { timeout: 2500 });
+        } catch {
+          await input.evaluate(
+            `
+            (el, text) => {
+              if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+                el.value = text;
+              } else if (el.isContentEditable) {
+                el.textContent = text;
+              }
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            `,
+            trimmed
+          );
+        }
+        await this.page.waitForTimeout(180);
+        let submittedByButton = false;
+        let submittedByKeyboard = false;
+        try {
+          await input.press("Enter", { timeout: 1000 });
+          submittedByKeyboard = true;
+        } catch {
+          // ignore
+        }
+        for (let i = 0; i < 5; i++) {
+          const clicked = await this.clickPromptSubmitButton(input);
+          submittedByButton = clicked || submittedByButton;
+          if (clicked) {
+            break;
+          }
+          await this.page.waitForTimeout(220);
+        }
         try {
           if (typeof input.inputValue === "function") {
             const remaining = (await input.inputValue()) as string;
             if (remaining.trim().length > 0) {
-              await this.clickPromptSubmitButton();
+              for (let i = 0; i < 5; i++) {
+                const clicked = await this.clickPromptSubmitButton(input);
+                submittedByButton = clicked || submittedByButton;
+                if (clicked) {
+                  break;
+                }
+                await this.page.waitForTimeout(220);
+              }
             }
           }
         } catch {
           // ignore
         }
-        return true;
+        return submittedByKeyboard || submittedByButton;
       } catch {
         // Try JS fallback.
       }
@@ -1653,26 +4319,218 @@ export class AISearcher {
     try {
       const jsSubmitPrompt = `
       (text) => {
-        const candidates = document.querySelectorAll("textarea, input[type='text'], input[name='q']");
+        function isVisible(element) {
+          if (!element) return false;
+          const style = window.getComputedStyle(element);
+          if (style.visibility === 'hidden' || style.display === 'none') return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }
+        const aiRoot = document.querySelector('div[data-subtree="aimc"]') || document;
+        const candidates = Array.from(aiRoot.querySelectorAll("textarea, input[type='text'], [contenteditable='true'], [role='textbox']"));
         for (const element of candidates) {
-          if (!element || element.offsetParent === null) continue;
+          if (!isVisible(element)) continue;
           element.focus();
-          element.value = text;
+          if (element.tagName === "TEXTAREA" || element.tagName === "INPUT") {
+            element.value = text;
+          } else {
+            element.textContent = text;
+          }
           element.dispatchEvent(new Event("input", { bubbles: true }));
+          element.dispatchEvent(new Event("change", { bubbles: true }));
           element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+          element.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", keyCode: 13, bubbles: true }));
           return true;
         }
         return false;
       }
       `;
-      const submitted = await this.page.evaluate(jsSubmitPrompt, trimmed);
+      const submitted = (await this.page.evaluate(jsSubmitPrompt, trimmed)) as boolean;
       if (submitted) {
-        return true;
+        await this.page.waitForTimeout(150);
+        const hasSendButton = await this.hasVisiblePromptSendButton();
+        const hasAnySendButton = hasSendButton || (await this.hasAnyPromptSendButton());
+        if (!hasAnySendButton) {
+          return true;
+        }
+        if (!hasSendButton) {
+          return false;
+        }
+        const clicked = await this.clickPromptSubmitButton();
+        return Boolean(clicked);
       }
       return this.clickPromptSubmitButton();
     } catch {
       return this.clickPromptSubmitButton();
     }
+  }
+
+  private async debugPromptControls(reason: string): Promise<void> {
+    if (!this.page) return;
+    try {
+      const snapshot = (await this.page.evaluate(`
+        () => {
+          function isVisible(element) {
+            if (!element || !element.getBoundingClientRect) return false;
+            const style = window.getComputedStyle(element);
+            if (style.visibility === "hidden" || style.display === "none") return false;
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+
+          const inputs = Array.from(
+            document.querySelectorAll("textarea, input[type='text'], input:not([type]), [contenteditable='true'], [role='textbox']")
+          )
+            .filter((el) => isVisible(el))
+            .slice(0, 6)
+            .map((el) => ({
+              tag: el.tagName,
+              aria: el.getAttribute("aria-label") || "",
+              placeholder: el.getAttribute("placeholder") || "",
+              name: el.getAttribute("name") || "",
+              type: el.getAttribute("type") || "",
+              top: Math.round(el.getBoundingClientRect().top || 0),
+            }));
+
+          const buttons = Array.from(document.querySelectorAll("button, [role='button']"))
+            .filter((el) => isVisible(el))
+            .map((el) => ({
+              aria: el.getAttribute("aria-label") || "",
+              text: (el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 36),
+              top: Math.round(el.getBoundingClientRect().top || 0),
+            }))
+            .filter((el) =>
+              /发送|send|submit|提交|开始|ask|提问|问/.test((el.aria || "") + (el.text || ""))
+            )
+            .slice(0, 8);
+
+          return {
+            url: location.href,
+            inputCount: inputs.length,
+            buttonCount: buttons.length,
+            inputs,
+            buttons,
+          };
+        }
+      `)) as {
+        url: string;
+        inputCount: number;
+        buttonCount: number;
+        inputs: Array<Record<string, string | number>>;
+        buttons: Array<Record<string, string | number>>;
+      };
+      console.error(
+        `提交诊断(${reason}): url=${snapshot.url}, inputs=${snapshot.inputCount}, buttons=${snapshot.buttonCount}, inputsDetail=${JSON.stringify(snapshot.inputs)}, buttonsDetail=${JSON.stringify(snapshot.buttons)}`
+      );
+    } catch (error) {
+      console.error(`提交诊断失败(${reason}): ${error}`);
+    }
+  }
+
+  private async submitImagePromptDirect(query: string): Promise<boolean> {
+    if (!this.page) return false;
+    const trimmed = query.trim();
+    if (!trimmed) return false;
+
+    const directInputSelectors = [
+      'textarea[aria-label*="提问"]',
+      'textarea[placeholder*="提问"]',
+      'textarea[aria-label*="问"]',
+      'textarea[placeholder*="问"]',
+      '[role="textbox"][aria-label*="提问"]',
+      '[role="textbox"][aria-label*="问"]',
+      "textarea",
+    ];
+
+    for (const selector of directInputSelectors) {
+      if (!this.page) return false;
+      let inputs: any[] = [];
+      try {
+        inputs = await this.page.$$(selector);
+      } catch {
+        continue;
+      }
+
+      for (const input of inputs) {
+        if (!this.page) return false;
+        try {
+          if (!(await input.isVisible())) {
+            continue;
+          }
+          await this.safeClickElement(input, 1500);
+          await this.page.waitForTimeout(120);
+
+          try {
+            await input.fill("", { timeout: 1200 });
+          } catch {
+            // ignore
+          }
+
+          try {
+            await input.fill(trimmed, { timeout: 2000 });
+          } catch {
+            await input.evaluate(
+              `
+              (el, text) => {
+                if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+                  el.value = text;
+                } else {
+                  el.textContent = text;
+                }
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              `,
+              trimmed
+            );
+          }
+
+          await this.page.waitForTimeout(180);
+          let hasAnySendCandidate = false;
+
+          for (const sendSelector of IMAGE_PROMPT_SEND_BUTTON_SELECTORS) {
+            if (!this.page) return false;
+            try {
+              const buttons = await this.page.$$(sendSelector);
+              for (const button of buttons) {
+                if (!(await button.isVisible())) {
+                  continue;
+                }
+                const meta = `${(await button.getAttribute("aria-label")) || ""} ${(await button.textContent()) || ""}`.toLowerCase();
+                if (SUBMIT_BUTTON_EXCLUDE_HINTS.some((hint) => meta.includes(hint))) {
+                  continue;
+                }
+                hasAnySendCandidate = true;
+                if ((await button.getAttribute("aria-disabled")) === "true") {
+                  continue;
+                }
+                if (await this.safeClickElement(button, 1200)) {
+                  return true;
+                }
+              }
+            } catch {
+              continue;
+            }
+          }
+
+          if (hasAnySendCandidate) {
+            // 发送按钮已出现但仍禁用，说明上传/上下文尚未就绪。
+            return false;
+          }
+
+          try {
+            await input.press("Enter", { timeout: 1000 });
+            return true;
+          } catch {
+            // ignore
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return false;
   }
 
   private async trySetImageInputFiles(imagePath: string): Promise<boolean> {
@@ -1683,10 +4541,398 @@ export class AISearcher {
         const inputs = await this.page.$$(selector);
         for (const input of inputs) {
           try {
-            await input.setInputFiles(imagePath);
-            return true;
+            const beforeSnapshot = await this.snapshotFileInputs();
+            await input.setInputFiles(imagePath, { timeout: 4000 });
+            const accept = await input.getAttribute("accept") || "(无)";
+            console.error(`setInputFiles 成功: selector='${selector}', accept='${accept}'`);
+            if (
+              (await this.waitForImageAttachmentReady(imagePath, 8000)) &&
+              (await this.waitForUploadProgressDone(12000))
+            ) {
+              console.error("检测到附件就绪且上传进度已完成");
+              return true;
+            }
+            if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
+              if (await this.waitForUploadProgressDone(12000)) {
+                console.error(
+                  `setInputFiles 后检测到输入结构变化且上传进度完成，按上传成功处理: selector='${selector}'`
+                );
+                return true;
+              }
+              console.error(
+                `setInputFiles 后虽然检测到输入结构变化，但上传进度未完成: selector='${selector}'`
+              );
+            }
+            console.error(`setInputFiles 后未检测到附件就绪: selector='${selector}'`);
           } catch {
             continue;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
+  private async snapshotFileInputs(): Promise<FileInputSnapshot> {
+    if (!this.page) {
+      return {
+        total: 0,
+        imageAcceptInputs: 0,
+        inputsWithFiles: 0,
+      };
+    }
+
+    try {
+      return (await this.page.evaluate(`
+        (() => {
+          const inputs = Array.from(document.querySelectorAll("input[type='file']"));
+          let imageAcceptInputs = 0;
+          let inputsWithFiles = 0;
+
+          for (const input of inputs) {
+            const accept = (input.getAttribute("accept") || "").toLowerCase();
+            if (
+              accept.includes("image") ||
+              accept.includes(".png") ||
+              accept.includes(".jpg") ||
+              accept.includes(".jpeg") ||
+              accept.includes(".webp")
+            ) {
+              imageAcceptInputs++;
+            }
+            const files = input.files ? Array.from(input.files) : [];
+            if (files.length > 0) {
+              inputsWithFiles++;
+            }
+          }
+
+          return {
+            total: inputs.length,
+            imageAcceptInputs,
+            inputsWithFiles,
+          };
+        })()
+      `)) as FileInputSnapshot;
+    } catch {
+      return {
+        total: 0,
+        imageAcceptInputs: 0,
+        inputsWithFiles: 0,
+      };
+    }
+  }
+
+  private async waitForFileInputMutation(
+    baseline: FileInputSnapshot,
+    maxWaitMs: number = 2500
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!this.page) return false;
+      const current = await this.snapshotFileInputs();
+
+      if (current.inputsWithFiles > 0) {
+        return true;
+      }
+
+      if (baseline.total > 0 && current.total === 0) {
+        return true;
+      }
+
+      if (
+        baseline.imageAcceptInputs > 0 &&
+        current.imageAcceptInputs < baseline.imageAcceptInputs
+      ) {
+        return true;
+      }
+
+      await this.page.waitForTimeout(200);
+    }
+
+    return false;
+  }
+
+  private async safeClickElement(element: any, timeout: number = 1800): Promise<boolean> {
+    try {
+      await element.click({ timeout });
+      return true;
+    } catch {
+      try {
+        await element.evaluate((node: any) => node.click());
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  private async waitForUploadOptionsVisible(maxWaitMs: number = 1800): Promise<boolean> {
+    if (!this.page) return false;
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!this.page) return false;
+      for (const selector of IMAGE_UPLOAD_OPTION_SELECTORS) {
+        try {
+          const options = await this.page.$$(selector);
+          for (const option of options) {
+            if (await option.isVisible()) {
+              return true;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      const snapshot = await this.snapshotFileInputs();
+      if (snapshot.total > 0) {
+        return true;
+      }
+
+      await this.page.waitForTimeout(120);
+    }
+    return false;
+  }
+
+  private async waitForImageAttachmentReady(
+    imagePath: string,
+    maxWaitMs: number = 7000
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    const expectedFileName = path.basename(imagePath).toLowerCase();
+    const start = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+      if (!this.page) return false;
+      try {
+        const ready = (await this.page.evaluate(
+          `
+          ({ expectedFileName, readySelectors }) => {
+            function hasExpectedFile(input) {
+              if (!input || input.tagName !== "INPUT") return false;
+              if (input.type !== "file") return false;
+              const files = input.files ? Array.from(input.files) : [];
+              if (!files.length) return false;
+              if (!expectedFileName) return true;
+              return files.some((file) => {
+                const name = (file?.name || "").toLowerCase();
+                return name === expectedFileName || name.endsWith(expectedFileName);
+              });
+            }
+
+            const aiRoot = document.querySelector("div[data-subtree='aimc']");
+            if (aiRoot) {
+              const scopedInputs = Array.from(aiRoot.querySelectorAll("input[type='file']"));
+              if (scopedInputs.some((input) => hasExpectedFile(input))) {
+                return true;
+              }
+            }
+
+            const allInputs = Array.from(document.querySelectorAll("input[type='file']"));
+            if (allInputs.some((input) => hasExpectedFile(input))) {
+              return true;
+            }
+
+            for (const selector of readySelectors) {
+              if (document.querySelector(selector)) {
+                return true;
+              }
+            }
+
+            if (expectedFileName) {
+              const bodyText = (document.body?.innerText || "").toLowerCase();
+              if (bodyText.includes(expectedFileName)) {
+                return true;
+              }
+            }
+
+            return false;
+          }
+          `,
+          {
+            expectedFileName,
+            readySelectors: IMAGE_ATTACHMENT_READY_SELECTORS,
+          }
+        )) as boolean;
+        if (ready) {
+          return true;
+        }
+      } catch {
+        // ignore
+      }
+
+      await this.page.waitForTimeout(250);
+    }
+
+    return false;
+  }
+
+  private async waitForUploadProgressDone(maxWaitMs: number = 12000): Promise<boolean> {
+    if (!this.page) return false;
+
+    const start = Date.now();
+    let stableIdleMs = 0;
+    while (Date.now() - start < maxWaitMs) {
+      if (!this.page) return false;
+      try {
+        const uploading = (await this.page.evaluate(`
+          (() => {
+            function isVisible(element) {
+              if (!element || !element.getBoundingClientRect) return false;
+              const style = window.getComputedStyle(element);
+              if (style.visibility === "hidden" || style.display === "none") return false;
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            }
+
+            const progressBars = Array.from(
+              document.querySelectorAll("[role='progressbar']")
+            );
+            for (const bar of progressBars) {
+              if (!isVisible(bar)) continue;
+              const aria = (bar.getAttribute("aria-label") || "").toLowerCase();
+              if (
+                aria.includes("上传") ||
+                aria.includes("uploading") ||
+                aria.includes("upload")
+              ) {
+                return true;
+              }
+            }
+
+            const text = (document.body?.innerText || "").toLowerCase();
+            return (
+              text.includes("正在上传文件") ||
+              text.includes("正在上传") ||
+              text.includes("uploading file")
+            );
+          })()
+        `)) as boolean;
+
+        if (!uploading) {
+          stableIdleMs += 250;
+          if (stableIdleMs >= 1200) {
+            return true;
+          }
+        } else {
+          stableIdleMs = 0;
+        }
+      } catch {
+        // ignore
+      }
+
+      await this.page.waitForTimeout(250);
+    }
+
+    return false;
+  }
+
+  private async tryUploadViaFileChooser(trigger: any, imagePath: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    try {
+      const beforeSnapshot = await this.snapshotFileInputs();
+      const fileChooserPromise = this.page
+        .waitForEvent("filechooser", { timeout: 1800 })
+        .catch(() => null);
+
+      const clicked = await this.safeClickElement(trigger, 1800);
+      if (!clicked) {
+        return false;
+      }
+      const chooser = await fileChooserPromise;
+      if (!chooser) {
+        return false;
+      }
+
+      await chooser.setFiles(imagePath);
+      console.error("通过 filechooser 上传图片");
+      await this.page.waitForTimeout(900);
+      if (
+        (await this.waitForImageAttachmentReady(imagePath, 8000)) &&
+        (await this.waitForUploadProgressDone(12000))
+      ) {
+        console.error("filechooser 检测到附件就绪且上传进度已完成");
+        return true;
+      }
+      if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
+        if (await this.waitForUploadProgressDone(12000)) {
+          console.error("filechooser 上传后检测到输入结构变化且上传进度完成，按上传成功处理");
+          return true;
+        }
+        console.error("filechooser 上传后输入结构变化，但上传进度未完成");
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async tryUploadViaVisibleOptions(imagePath: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    for (const selector of IMAGE_UPLOAD_OPTION_SELECTORS) {
+      if (!this.page) return false;
+      try {
+        const options = await this.page.$$(selector);
+        for (const option of options) {
+          if (!(await option.isVisible())) {
+            continue;
+          }
+          console.error(`点击图片上传选项: ${selector}`);
+          if (await this.tryUploadViaFileChooser(option, imagePath)) {
+            return true;
+          }
+          if (!this.page) return false;
+          await this.page.waitForTimeout(300);
+          if (await this.trySetImageInputFiles(imagePath)) {
+            console.error("通过上传选项点击后直接文件输入上传图片");
+            if (this.page) await this.page.waitForTimeout(1800);
+            return true;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return false;
+  }
+
+  private async tryUploadViaMoreInputMenu(imagePath: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    for (const selector of IMAGE_UPLOAD_MENU_TRIGGER_SELECTORS) {
+      if (!this.page) return false;
+      try {
+        const triggers = await this.page.$$(selector);
+        for (const trigger of triggers) {
+          if (!(await trigger.isVisible())) {
+            continue;
+          }
+          console.error(`点击图片上传菜单触发器: ${selector}`);
+          const clicked = await this.safeClickElement(trigger, 1800);
+          if (!clicked) {
+            console.error(`点击图片上传菜单触发器失败: ${selector}`);
+            continue;
+          }
+          if (!this.page) return false;
+          await this.waitForUploadOptionsVisible(1800);
+
+          if (await this.tryUploadViaVisibleOptions(imagePath)) {
+            return true;
+          }
+
+          if (await this.trySetImageInputFiles(imagePath)) {
+            console.error("通过打开上传菜单后直接文件输入上传图片");
+            if (this.page) await this.page.waitForTimeout(1800);
+            return true;
           }
         }
       } catch {
@@ -1702,32 +4948,24 @@ export class AISearcher {
 
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (!this.page) return false;
       if (attempt > 0) {
         await this.page.waitForTimeout(700);
       }
 
       if (await this.trySetImageInputFiles(imagePath)) {
+        console.error("通过直接文件输入上传图片");
+        // 等待 Google 处理上传的图片
+        if (this.page) await this.page.waitForTimeout(2000);
         return true;
       }
 
-      for (const selector of IMAGE_UPLOAD_TRIGGER_SELECTORS) {
-        try {
-          const triggers = await this.page.$$(selector);
-          for (const trigger of triggers) {
-            if (!(await trigger.isVisible())) {
-              continue;
-            }
+      if (await this.tryUploadViaMoreInputMenu(imagePath)) {
+        return true;
+      }
 
-            await trigger.click();
-            await this.page.waitForTimeout(400);
-
-            if (await this.trySetImageInputFiles(imagePath)) {
-              return true;
-            }
-          }
-        } catch {
-          continue;
-        }
+      if (await this.tryUploadViaVisibleOptions(imagePath)) {
+        return true;
       }
     }
 
@@ -1768,7 +5006,12 @@ export class AISearcher {
     maxWaitSeconds: number = 6
   ): Promise<boolean> {
     for (let i = 0; i < maxWaitSeconds; i++) {
-      await page.waitForTimeout(1000);
+      if (!this.page) return false;
+      try {
+        await page.waitForTimeout(1000);
+      } catch {
+        return false;
+      }
       const extracted = await this.extractAiAnswer(page);
       if (
         extracted.success &&
@@ -1790,10 +5033,24 @@ export class AISearcher {
           return true;
         }
       } catch {
-        continue;
+        return false;
       }
     }
 
+    return false;
+  }
+
+  private async waitForPromptInputReady(maxWaitMs: number = 5000): Promise<boolean> {
+    if (!this.page) return false;
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!this.page) return false;
+      const input = await this.findPromptInput();
+      if (input) {
+        return true;
+      }
+      await this.page.waitForTimeout(250);
+    }
     return false;
   }
 
@@ -1803,24 +5060,54 @@ export class AISearcher {
   ): Promise<boolean> {
     if (!this.page) return false;
 
-    const submitted = await this.submitPrompt(prompt);
-    if (!submitted) {
-      console.error("主输入框提交失败，尝试使用追问输入框提交图片提示词");
-      return this.submitFollowUpViaJs(prompt);
-    }
+    await this.waitForPromptInputReady(5000);
+    let hasSubmitted = false;
 
+    let submitted = await this.submitImagePromptDirect(prompt);
+    if (!submitted) {
+      console.error("直连提问框提交失败，尝试使用通用主输入框提交图片提示词");
+      submitted = await this.submitPrompt(prompt);
+      if (!submitted) {
+        await this.debugPromptControls("首次提交失败");
+        return false;
+      }
+    }
+    hasSubmitted = true;
+
+    if (!this.page) return false;
     if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 6)) {
       return true;
     }
 
-    console.error("首次提交后未检测到生成迹象，尝试追问输入框二次提交...");
-    if (!(await this.submitFollowUpViaJs(prompt))) {
+    if (!this.page) return false;
+    console.error("首次提交后未检测到生成迹象，尝试二次主输入提交...");
+    if (!(await this.submitImagePromptDirect(prompt))) {
+      console.error("二次直连提问框提交失败，尝试主输入框再次提交...");
+      if (!(await this.submitPrompt(prompt))) {
+        await this.debugPromptControls("二次提交失败");
+        if (hasSubmitted) {
+          console.error("提示词已提交，但未检测到二次提交入口，继续后续提取流程");
+          return true;
+        }
+        return false;
+      }
+    }
+    hasSubmitted = true;
+
+    if (!this.page) return false;
+    await this.page.waitForTimeout(600);
+    if (!this.page) return false;
+    await this.waitForAiContent(this.page);
+    if (!this.page) return false;
+    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 5)) {
       return true;
     }
 
-    await this.page.waitForTimeout(600);
-    await this.waitForAiContent(this.page);
-    return true;
+    if (hasSubmitted) {
+      console.error("提示词已提交，但短时间内未检测到生成迹象，继续后续提取流程");
+      return true;
+    }
+    return false;
   }
 
   private async waitForMeaningfulImageAnswer(
@@ -1829,7 +5116,12 @@ export class AISearcher {
     maxWaitSeconds: number = 12
   ): Promise<SearchResult | null> {
     for (let i = 0; i < maxWaitSeconds; i++) {
-      await page.waitForTimeout(1000);
+      if (!this.page) return null;
+      try {
+        await page.waitForTimeout(1000);
+      } catch {
+        return null;
+      }
       const extracted = await this.extractAiAnswer(page);
       if (
         extracted.success &&
@@ -1883,9 +5175,8 @@ export class AISearcher {
     const normalizedQuery = query.trim();
     const normalizedImagePath = imagePath?.trim() || undefined;
     const hasImageInput = Boolean(normalizedImagePath);
-    const imageOnlyPrompt =
-      IMAGE_ONLY_PROMPT_BY_LANGUAGE[language] || IMAGE_ONLY_PROMPT_BY_LANGUAGE["en-US"];
-    const effectivePrompt = normalizedQuery || imageOnlyPrompt;
+    const effectivePrompt = normalizedQuery;
+    let absoluteImagePath: string | undefined;
 
     console.error("=".repeat(60));
     console.error(
@@ -1901,18 +5192,37 @@ export class AISearcher {
       sources: [],
       error: "",
     };
-    if (hasImageInput && !normalizedQuery) {
-      result.query = effectivePrompt;
-    }
-
     if (!normalizedQuery && !normalizedImagePath) {
       result.error = "缺少查询内容，请至少提供文本问题或图片路径";
+      return result;
+    }
+
+    if (hasImageInput && !normalizedQuery) {
+      result.error = "图片搜索必须同时提供文本问题（仅上传图片无法触发有效回复）";
       return result;
     }
 
     if (normalizedImagePath && !fs.existsSync(normalizedImagePath)) {
       result.error = `图片文件不存在: ${normalizedImagePath}`;
       return result;
+    }
+
+    if (hasImageInput && normalizedImagePath && this.shouldUseNodriverImageSearch()) {
+      try {
+        const nodriverResult = await this.runNodriverImageSearch(
+          effectivePrompt,
+          language,
+          normalizedImagePath
+        );
+        if (nodriverResult.success) {
+          this.lastAiAnswer = nodriverResult.aiAnswer;
+          this.lastActivityTime = Date.now();
+          return nodriverResult;
+        }
+        console.error(`nodriver 图片搜索失败，回退 Playwright: ${nodriverResult.error}`);
+      } catch (error) {
+        console.error(`nodriver 图片搜索异常，回退 Playwright: ${error}`);
+      }
     }
 
     try {
@@ -1977,7 +5287,7 @@ export class AISearcher {
       }
 
       if (normalizedImagePath) {
-        const absoluteImagePath = path.resolve(normalizedImagePath);
+        absoluteImagePath = path.resolve(normalizedImagePath);
         const uploaded = await this.uploadImageAttachment(absoluteImagePath);
         if (!uploaded) {
           result.error = "未找到可用的图片上传入口（可能是页面未就绪或 Google 页面结构变更）。";
@@ -1985,26 +5295,66 @@ export class AISearcher {
         }
         console.error(`图片上传成功: ${absoluteImagePath}`);
 
+        // 上传后记录页面状态用于调试
+        if (this.page) {
+          const postUploadUrl = this.page.url();
+          console.error(`图片上传后页面 URL: ${postUploadUrl}`);
+          if (postUploadUrl !== url) {
+            console.error("检测到图片上传后页面 URL 变化，等待新页面加载...");
+            try {
+              await this.page.waitForLoadState("domcontentloaded", { timeout: 5000 });
+            } catch {
+              // ignore
+            }
+            await this.waitForAiContent(this.page);
+          }
+        }
+
+        if (!this.page) {
+          result.error = "图片搜索过程中页面已关闭（可能超时）。";
+          return result;
+        }
+
         const submitted = await this.submitImagePromptWithFallback(
           effectivePrompt,
           baselineAiAnswer
         );
         if (!submitted) {
-          console.error("未找到可用输入框提交提示词，等待页面自动处理图片");
+          if (!this.page) {
+            result.error = "图片搜索过程中页面已关闭（可能超时）。";
+          } else {
+            result.error =
+              "图片已上传，但未能提交提示词（输入框或发送按钮不可用，可能是页面结构变化）。";
+          }
+          return result;
         } else {
           console.error(`已提交图片提示词: ${effectivePrompt}`);
           result.query = effectivePrompt;
         }
 
+        if (!this.page) {
+          result.error = "图片搜索过程中页面已关闭（可能超时）。";
+          return result;
+        }
         await this.page.waitForTimeout(1000);
-        await this.waitForAiContent(this.page);
+        if (this.page) {
+          await this.waitForAiContent(this.page);
+        }
       }
 
       // 等待 AI 输出完成（优先保证在调用方 deadline 内返回）
+      if (!this.page) {
+        result.error = "搜索过程中页面已关闭（可能超时）。";
+        return result;
+      }
       const streamWaitSeconds = hasImageInput ? 22 : 10;
       await this.waitForStreamingComplete(this.page, streamWaitSeconds);
 
       // 短暂等待来源链接渲染（最佳努力，不阻塞过久）
+      if (!this.page) {
+        result.error = "搜索过程中页面已关闭（可能超时）。";
+        return result;
+      }
       console.error("短暂等待来源链接渲染（最多2秒）...");
       try {
         await this.page.waitForFunction(
@@ -2060,6 +5410,10 @@ export class AISearcher {
       }
 
       // 提取内容
+      if (!this.page) {
+        result.error = "搜索过程中页面已关闭（可能超时）。";
+        return result;
+      }
       let extractedResult = await this.extractAiAnswer(this.page);
       if (
         hasImageInput &&
@@ -2075,6 +5429,69 @@ export class AISearcher {
           extractedResult = meaningfulResult;
         }
       }
+      if (hasImageInput) {
+        const placeholderNow = this.isPlaceholderImageAnswer(
+          extractedResult.aiAnswer,
+          baselineAiAnswer
+        );
+        console.error(
+          `图片占位重试检查: absoluteImagePath=${absoluteImagePath || "(none)"}, placeholder=${placeholderNow}, baselineLen=${baselineAiAnswer.length}, extractedLen=${extractedResult.aiAnswer.length}`
+        );
+      }
+
+      if (
+        hasImageInput &&
+        absoluteImagePath &&
+        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer)
+      ) {
+        console.error("图片结果仍为占位内容，执行一次自动重试（重新上传并提交）...");
+        try {
+          const retryUrl = this.buildAiModeUrl(language);
+          await this.page.goto(retryUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: this.timeout * 1000,
+          });
+          await this.waitForAiContent(this.page);
+
+          const retryBaselineResult = await this.extractAiAnswer(this.page);
+          const retryBaselineAnswer = retryBaselineResult.aiAnswer || "";
+
+          const retryUploaded = await this.uploadImageAttachment(absoluteImagePath);
+          if (retryUploaded) {
+            console.error("图片自动重试上传成功");
+            const retrySubmitted = await this.submitImagePromptWithFallback(
+              effectivePrompt,
+              retryBaselineAnswer
+            );
+            if (retrySubmitted) {
+              if (this.page) {
+                await this.page.waitForTimeout(1000);
+                await this.waitForAiContent(this.page);
+                await this.waitForStreamingComplete(this.page, 26);
+                const retryExtracted = await this.extractAiAnswer(this.page);
+                if (
+                  retryExtracted.success &&
+                  !this.isPlaceholderImageAnswer(retryExtracted.aiAnswer, retryBaselineAnswer)
+                ) {
+                  extractedResult = retryExtracted;
+                  console.error(
+                    `图片自动重试成功，回答长度: ${retryExtracted.aiAnswer.length}`
+                  );
+                } else {
+                  console.error("图片自动重试后仍为占位内容");
+                }
+              }
+            } else {
+              console.error("图片自动重试未能提交提示词");
+            }
+          } else {
+            console.error("图片自动重试上传失败");
+          }
+        } catch (retryError) {
+          console.error(`图片自动重试失败: ${retryError}`);
+        }
+      }
+
       result.aiAnswer = extractedResult.aiAnswer;
       result.sources = extractedResult.sources;
       result.success = result.aiAnswer.length > 0;
@@ -2281,6 +5698,22 @@ export class AISearcher {
     // 关闭现有会话
     await this.close();
 
+    if (this.shouldUseNodriverAuth()) {
+      console.error("优先使用 nodriver 执行登录流程...");
+      try {
+        const nodriverResult = await this.runNodriverAuthFlow(NODRIVER_LOGIN_URL);
+        if (nodriverResult.success && nodriverResult.stateSaved) {
+          return {
+            success: true,
+            message: "登录完成（nodriver）！认证状态已保存，现在可以正常使用搜索功能了。",
+          };
+        }
+        console.error(`nodriver 登录流程未成功，回退 Playwright: ${nodriverResult.message}`);
+      } catch (error) {
+        console.error(`nodriver 登录流程异常，回退 Playwright: ${error}`);
+      }
+    }
+
     try {
       const executablePath = this.findBrowser();
       const proxy = await this.detectProxy();
@@ -2313,8 +5746,8 @@ export class AISearcher {
       const context = await browser.newContext(contextOptions);
       const page = await context.newPage();
 
-      // 打开 Google AI 搜索页面
-      console.error("打开 Google AI 搜索页面...");
+      // 打开 HUGE AI 搜索页面
+      console.error("打开 HUGE AI 搜索页面...");
       await page.goto("https://www.google.com/search?q=hello&udm=50", {
         waitUntil: "domcontentloaded",
         timeout: 30000,
