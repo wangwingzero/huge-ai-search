@@ -4,7 +4,7 @@
   "displayName": "HUGE",
   "description": "在 VS Code 中直接与 HUGE AI Mode 对话（复用 huge-ai-search MCP）",
   "icon": "media/huge-ai-chat-icon.png",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "TigerWang",
   "license": "MIT",
   "repository": {
@@ -29,14 +29,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:hugeAiChat.openChat",
-    "onCommand:hugeAiChat.newThread",
-    "onCommand:hugeAiChat.runSetup",
-    "onCommand:hugeAiChat.clearHistory",
-    "onCommand:hugeAiChat.sendSelectionToHuge",
-    "onView:hugeAiChat.home"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -52,7 +45,8 @@
       "hugeAiChatContainer": [
         {
           "id": "hugeAiChat.home",
-          "name": "HUGE"
+          "name": "HUGE",
+          "type": "webview"
         }
       ]
     },
