@@ -887,9 +887,18 @@ server.tool(
             const retryBudgetMs =
               requestTotalBudgetMs - (Date.now() - requestStartMs) - REQUEST_BUDGET_SAFETY_MS;
             if (retryBudgetMs >= REQUEST_MIN_EXECUTION_MS) {
-              log("INFO", `防幻觉触发但查询带 guardrail，去掉 guardrail 重试: query='${normalizedQuery}'`);
+              // For bare single-token queries (e.g. "Zustand", "FastAPI"),
+              // Google AI often returns thin results.  Rephrase as a question
+              // so Google AI Mode gives a proper tech explanation.
+              let retryQuery = normalizedQuery;
+              if (/^[A-Za-z][A-Za-z0-9._:+#-]{1,63}$/.test(normalizedQuery)) {
+                retryQuery = language.startsWith("en")
+                  ? `what is ${normalizedQuery}`
+                  : `${normalizedQuery}是什么`;
+              }
+              log("INFO", `防幻觉触发但查询带 guardrail，去掉 guardrail 重试: query='${normalizedQuery}' -> retryQuery='${retryQuery}'`);
               const unguardedResult = await Promise.race([
-                searcherInstance.search(normalizedQuery, language, normalizedImagePath),
+                searcherInstance.search(retryQuery, language, normalizedImagePath),
                 new Promise<SearchResult>((_, reject) =>
                   setTimeout(() => reject(new Error(`去 guardrail 重试超时`)), Math.min(searchExecutionTimeoutMs, retryBudgetMs))
                 ),
