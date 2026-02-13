@@ -1,10 +1,10 @@
 {
   "name": "huge-ai-chat",
-  "publisher": "hudawang",
+  "publisher": "wangwingzero",
   "displayName": "HUGE",
   "description": "在 VS Code 中直接与 HUGE AI Mode 对话（复用 huge-ai-search MCP）",
   "icon": "media/huge-ai-chat-icon.png",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "TigerWang",
   "license": "MIT",
   "repository": {
