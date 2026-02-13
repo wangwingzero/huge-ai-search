@@ -308,8 +308,8 @@ const NODRIVER_DEFAULT_WAIT_SECONDS = 300;
 const NODRIVER_SCRIPT_FILE_NAME = "nodriver_auth_bridge.py";
 const NODRIVER_LOGIN_URL = "https://www.google.com/search?q=hello&udm=50";
 const NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME = "nodriver_image_search_bridge_v2.py";
-const NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS = 85;
-const NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT = false;
+const NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS = 70;
+const NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT = true;
 
 const NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT = String.raw`#!/usr/bin/env python3
 import argparse
@@ -688,25 +688,66 @@ async def try_send_file(tab, file_path: str):
         for element in elements or []:
             try:
                 await element.send_file(file_path)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.8)
                 return True
             except Exception:
                 continue
     return False
 
 
+async def verify_image_attached(tab, max_wait: float = 8.0) -> bool:
+    """验证图片是否真正附加成功（检测 blob 预览或移除按钮）"""
+    expression = """
+(() => {
+  const root = document.querySelector("div[data-subtree='aimc']") || document;
+  const blobImg = root.querySelector("img[src^='blob:']");
+  if (blobImg) return "blob";
+  const removeBtn = root.querySelector("button[aria-label*='移除'], button[aria-label*='Remove'], button[aria-label*='remove']");
+  if (removeBtn) return "remove";
+  const fileInputs = root.querySelectorAll("input[type='file']");
+  for (const input of fileInputs) {
+    if (input.files && input.files.length > 0) return "files";
+  }
+  return "";
+})()
+"""
+    deadline = time.monotonic() + max_wait
+    while time.monotonic() < deadline:
+        try:
+            result = await tab.evaluate(expression, return_by_value=True)
+        except TypeError:
+            result = await tab.evaluate(expression)
+        except Exception:
+            result = ""
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        if result:
+            return True
+        await asyncio.sleep(0.5)
+    return False
+
+
 async def upload_image(tab, image_path: str):
-    for _ in range(3):
+    for attempt in range(4):
         if await try_send_file(tab, image_path):
-            return True
+            if await verify_image_attached(tab, max_wait=10.0):
+                return True
+            # 文件发送了但未附加成功，等一下再重试
+            print(f"attempt {attempt+1}: send_file ok but attachment not verified, retrying", file=sys.stderr)
 
-        await click_upload_menu_button(tab, timeout=1.2)
-        await asyncio.sleep(0.35)
+        await click_upload_menu_button(tab, timeout=1.5)
+        await asyncio.sleep(0.4)
 
         if await try_send_file(tab, image_path):
-            return True
+            if await verify_image_attached(tab, max_wait=10.0):
+                return True
+            print(f"attempt {attempt+1}: send_file after menu ok but attachment not verified, retrying", file=sys.stderr)
 
-    return await try_send_file(tab, image_path)
+        # 重试间隔递增，给网络恢复时间
+        if attempt < 3:
+            await asyncio.sleep(0.5 + attempt * 0.5)
+
+    return False
 
 
 async def submit_prompt(tab, prompt: str):
@@ -1499,12 +1540,12 @@ async def main():
 
         browser = await uc.start(config=config)
         tab = await browser.get(args.url)
-        await asyncio.sleep(1.8)
+        await asyncio.sleep(1.0)
 
         initial = await evaluate_extract(tab)
         baseline = str(initial.get("answer") or "").strip()
         if initial.get("blocked"):
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)
 
         uploaded = await upload_image(tab, image_path)
         if not uploaded:
@@ -2000,9 +2041,17 @@ export class AISearcher {
     return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
   }
 
+  private isFalsyEnv(value?: string): boolean {
+    if (!value) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
+  }
+
   /**
    * 检测代理设置
-   * 默认不启用系统代理继承与本地端口自动探测，避免与手工浏览器网络路径不一致。
+   * 默认启用系统代理继承与本地端口自动探测。
+   * 设置 HUGE_AI_SEARCH_USE_SYSTEM_PROXY=0 可关闭系统代理继承。
+   * 设置 HUGE_AI_SEARCH_AUTO_DETECT_PROXY=0 可关闭本地端口自动探测。
    */
   private async detectProxy(): Promise<string | undefined> {
     console.error("开始检测代理...");
@@ -2014,9 +2063,9 @@ export class AISearcher {
       return explicitProxy;
     }
 
-    // 2. 可选：继承系统代理环境变量（默认关闭）
-    const useSystemProxy = this.isTruthyEnv(process.env.HUGE_AI_SEARCH_USE_SYSTEM_PROXY);
-    if (useSystemProxy) {
+    // 2. 继承系统代理环境变量（默认开启，设置 HUGE_AI_SEARCH_USE_SYSTEM_PROXY=0 可关闭）
+    const disableSystemProxy = this.isFalsyEnv(process.env.HUGE_AI_SEARCH_USE_SYSTEM_PROXY);
+    if (!disableSystemProxy) {
       const envVars = [
         "HTTP_PROXY",
         "http_proxy",
@@ -2032,19 +2081,19 @@ export class AISearcher {
           return proxy;
         }
       }
-      console.error("已启用系统代理继承，但环境变量中未找到代理配置");
+      console.error("系统代理继承已启用，但环境变量中未找到代理配置");
     } else {
-      console.error("未启用系统代理继承（设置 HUGE_AI_SEARCH_USE_SYSTEM_PROXY=1 可开启）");
+      console.error("已关闭系统代理继承（HUGE_AI_SEARCH_USE_SYSTEM_PROXY=0）");
     }
 
-    // 3. 可选：检测常见代理端口（默认关闭）
-    const autoDetectProxy = this.isTruthyEnv(process.env.HUGE_AI_SEARCH_AUTO_DETECT_PROXY);
-    if (!autoDetectProxy) {
-      console.error("未启用自动代理端口探测（设置 HUGE_AI_SEARCH_AUTO_DETECT_PROXY=1 可开启）");
+    // 3. 检测常见代理端口（默认开启，设置 HUGE_AI_SEARCH_AUTO_DETECT_PROXY=0 可关闭）
+    const disableAutoDetect = this.isFalsyEnv(process.env.HUGE_AI_SEARCH_AUTO_DETECT_PROXY);
+    if (disableAutoDetect) {
+      console.error("已关闭自动代理端口探测（HUGE_AI_SEARCH_AUTO_DETECT_PROXY=0）");
       return undefined;
     }
 
-    console.error("已启用自动代理端口探测，开始检测本地常见代理端口...");
+    console.error("开始检测本地常见代理端口...");
 
     type PortCandidate = {
       port: number;
