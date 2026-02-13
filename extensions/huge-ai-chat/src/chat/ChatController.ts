@@ -13,7 +13,8 @@ import {
   SearchLanguage,
 } from "./types";
 
-const SEARCH_REQUEST_TIMEOUT_MS = 120_000;
+const SEARCH_REQUEST_TIMEOUT_TEXT_MS = 120_000;
+const SEARCH_REQUEST_TIMEOUT_IMAGE_MS = 170_000;
 const MAX_PASTED_IMAGE_BYTES = 15 * 1024 * 1024;
 const TEMP_IMAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TEMP_IMAGE_CLEANUP_DELAY_MS = 10 * 60 * 1000;
@@ -140,7 +141,23 @@ function isTechTermLookupQuery(query: string): boolean {
   return false;
 }
 
-function hasAuthoritativeSource(sources: Array<{ url: string }>): boolean {
+function hasAuthoritativeSource(sources: Array<{ url: string }>, query?: string): boolean {
+  // Extract a normalized term from the query for official-site matching.
+  let queryTerm = "";
+  if (query) {
+    const trimmed = query.trim().replace(/[?？!！。,.，；;:：]+$/g, "").trim();
+    const lower = trimmed.toLowerCase();
+    const enMatch = lower.match(/^what\s+is\s+(.+)$/i);
+    const zhMatch = lower.match(/^(.+?)\s*(?:是什么|是啥|什么意思|含义|定义)$/);
+    if (enMatch) {
+      queryTerm = enMatch[1].trim().toLowerCase();
+    } else if (zhMatch) {
+      queryTerm = zhMatch[1].trim().toLowerCase();
+    } else if (/^[A-Za-z][A-Za-z0-9._:+#-]{1,63}$/.test(trimmed)) {
+      queryTerm = lower;
+    }
+  }
+
   return sources.some((source) => {
     try {
       const parsed = new URL(source.url);
@@ -159,6 +176,7 @@ function hasAuthoritativeSource(sources: Array<{ url: string }>): boolean {
         return true;
       }
 
+      // Standards bodies
       if (
         host === "rfc-editor.org" ||
         host.endsWith(".rfc-editor.org") ||
@@ -176,6 +194,31 @@ function hasAuthoritativeSource(sources: Array<{ url: string }>): boolean {
         return true;
       }
 
+      // Package registries
+      if (
+        host === "www.npmjs.com" || host === "npmjs.com" ||
+        host === "pypi.org" || host.endsWith(".pypi.org") ||
+        host === "crates.io" ||
+        host === "pkg.go.dev" ||
+        host === "rubygems.org" ||
+        host === "www.nuget.org" || host === "nuget.org" ||
+        host === "packagist.org" ||
+        host === "pub.dev" ||
+        host === "mvnrepository.com" || host === "www.mvnrepository.com"
+      ) {
+        return true;
+      }
+
+      // Well-known tech platforms
+      if (
+        host === "dev.to" ||
+        host === "medium.com" || host.endsWith(".medium.com") ||
+        host === "wikipedia.org" || host.endsWith(".wikipedia.org")
+      ) {
+        return true;
+      }
+
+      // Documentation sites
       if (
         host.startsWith("docs.") ||
         host.includes(".docs.") ||
@@ -188,11 +231,23 @@ function hasAuthoritativeSource(sources: Array<{ url: string }>): boolean {
         return true;
       }
 
+      // Official sites: domain contains the query term
+      if (queryTerm && queryTerm.length >= 2) {
+        const hostBase = host.replace(/^www\./, "");
+        if (hostBase.includes(queryTerm)) {
+          return true;
+        }
+      }
+
       return false;
     } catch {
       return false;
     }
   });
+}
+
+function hasSubstantiveAnswer(answer: string, sourceCount: number): boolean {
+  return (answer || "").length > 200 && sourceCount >= 1;
 }
 
 function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMessage {
@@ -303,6 +358,7 @@ export class ChatController implements vscode.Disposable {
   private shouldForceNoRecord(
     query: string,
     sources: Array<{ url: string }>,
+    answer: string,
     isFollowUp: boolean,
     hasImageInput: boolean
   ): boolean {
@@ -315,7 +371,13 @@ export class ChatController implements vscode.Disposable {
     if (!isTechTermLookupQuery(query)) {
       return false;
     }
-    return !hasAuthoritativeSource(sources);
+    if (hasAuthoritativeSource(sources, query)) {
+      return false;
+    }
+    if (hasSubstantiveAnswer(answer, sources.length)) {
+      return false;
+    }
+    return true;
   }
 
   private buildNoRecordMarkdown(): string {
@@ -600,8 +662,8 @@ export class ChatController implements vscode.Disposable {
       threadId,
       "assistant",
       persistedImage
-        ? "正在调用 Google AI 搜索并上传截图，请稍候..."
-        : "正在调用 Google AI 搜索，请稍候...",
+        ? "正在调用 HUGE AI 搜索并上传截图，请稍候..."
+        : "正在调用 HUGE AI 搜索，请稍候...",
       "pending"
     );
     if (!userMessage || !pendingMessage) {
@@ -622,8 +684,8 @@ export class ChatController implements vscode.Disposable {
       "progress",
       "请求已提交",
       persistedImage
-        ? `正在准备调用 Google AI 搜索服务（附带 ${normalizedImageCount} 张截图${normalizedImageCount > 1 ? "，已自动合并" : ""}）。`
-        : "正在准备调用 Google AI 搜索服务。",
+        ? `正在准备调用 HUGE AI 搜索服务（附带 ${normalizedImageCount} 张截图${normalizedImageCount > 1 ? "，已自动合并" : ""}）。`
+        : "正在准备调用 HUGE AI 搜索服务。",
       "可在下方继续输入，当前请求完成后再发送下一条。",
       threadId
     );
@@ -649,6 +711,9 @@ export class ChatController implements vscode.Disposable {
       this.output.appendLine(
         `[Chat] Search start: thread=${threadId}, follow_up=${useFollowUp}, has_image=${Boolean(persistedImage)}`
       );
+      const requestTimeoutMs = persistedImage
+        ? SEARCH_REQUEST_TIMEOUT_IMAGE_MS
+        : SEARCH_REQUEST_TIMEOUT_TEXT_MS;
       const resultText = await withTimeout(
         this.mcpManager.callSearch({
           query: text,
@@ -657,8 +722,8 @@ export class ChatController implements vscode.Disposable {
           session_id: useFollowUp ? latestThread.sessionId : undefined,
           image_path: persistedImage?.filePath,
         }),
-        SEARCH_REQUEST_TIMEOUT_MS,
-        `请求超时（${Math.floor(SEARCH_REQUEST_TIMEOUT_MS / 1000)} 秒），请重试或先执行 “Huge AI Chat: Run Login Setup”。`
+        requestTimeoutMs,
+        `请求超时（${Math.floor(requestTimeoutMs / 1000)} 秒），请重试或先执行 “Huge AI Chat: Run Login Setup”。`
       );
       this.output.appendLine(`[Chat] Search done: thread=${threadId}`);
       this.postStatus(
@@ -708,6 +773,7 @@ export class ChatController implements vscode.Disposable {
       const forceNoRecord = this.shouldForceNoRecord(
         text,
         parsed.sources,
+        parsed.answer,
         useFollowUp,
         Boolean(persistedImage)
       );
