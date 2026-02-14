@@ -167,7 +167,7 @@
     "check:publish-secrets": "node scripts/check-release-readiness.js --require-secrets",
     "compile": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
-    "test": "npm run check:release && npm run compile && node --test",
+    "test": "npm run check:release && tsc -p . && node --test",
     "package:vsix": "npm run check:release && npm run compile && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && npx @vscode/vsce package --no-dependencies -o artifacts/huge-ai-search.vsix",
     "vscode:prepublish": "npm run compile"
   },
