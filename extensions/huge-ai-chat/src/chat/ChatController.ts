@@ -315,8 +315,10 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
 
 export class ChatController implements vscode.Disposable {
   private panel: vscode.WebviewPanel | null = null;
+  private sidebarWebview: vscode.Webview | null = null;
   private readonly disposables: vscode.Disposable[] = [];
   private panelDisposables: vscode.Disposable[] = [];
+  private sidebarDisposables: vscode.Disposable[] = [];
   private readonly pendingThreads = new Set<string>();
   private readonly lastQueryByThread = new Map<string, string>();
   private warmupTask: Promise<void> | null = null;
@@ -382,6 +384,33 @@ export class ChatController implements vscode.Disposable {
 
   private buildNoRecordMarkdown(): string {
     return `${NO_RECORD_MESSAGE}\n\n${NO_RECORD_DISCLAIMER}`;
+  }
+
+  attachSidebarView(webviewView: vscode.WebviewView): void {
+    this.disposeSidebarListeners();
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+    };
+
+    webviewView.webview.html = this.getWebviewHtml(webviewView.webview);
+    this.sidebarWebview = webviewView.webview;
+
+    this.sidebarDisposables.push(
+      webviewView.onDidDispose(() => {
+        this.sidebarWebview = null;
+        this.disposeSidebarListeners();
+      })
+    );
+
+    this.sidebarDisposables.push(
+      webviewView.webview.onDidReceiveMessage((payload: unknown) => {
+        void this.handlePanelMessage(payload);
+      })
+    );
+
+    this.ensureMcpWarmup();
   }
 
   async openChatPanel(): Promise<void> {
@@ -463,10 +492,12 @@ export class ChatController implements vscode.Disposable {
 
   dispose(): void {
     this.disposePanelListeners();
+    this.disposeSidebarListeners();
     if (this.panel) {
       this.panel.dispose();
       this.panel = null;
     }
+    this.sidebarWebview = null;
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -495,6 +526,13 @@ export class ChatController implements vscode.Disposable {
       disposable.dispose();
     }
     this.panelDisposables = [];
+  }
+
+  private disposeSidebarListeners(): void {
+    for (const disposable of this.sidebarDisposables) {
+      disposable.dispose();
+    }
+    this.sidebarDisposables = [];
   }
 
   private async handlePanelMessage(payload: unknown): Promise<void> {
@@ -1150,10 +1188,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   private postMessage(message: HostToPanelMessage): void {
-    if (!this.panel) {
-      return;
+    if (this.panel) {
+      void this.panel.webview.postMessage(message);
     }
-    void this.panel.webview.postMessage(message);
+    if (this.sidebarWebview) {
+      void this.sidebarWebview.postMessage(message);
+    }
   }
 
   private getWebviewHtml(webview: vscode.Webview): string {

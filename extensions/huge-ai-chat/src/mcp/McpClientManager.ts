@@ -30,10 +30,21 @@ interface ResolvedServerCommand {
   source: "configured" | "development" | "npx-auto";
 }
 
+const DEFAULT_MCP_ENV: Record<string, string> = {
+  HUGE_AI_SEARCH_IMAGE_DRIVER: "playwright",
+  HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS: "55000",
+  HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER: "1.15",
+};
+
 function getSanitizedEnv(extraEnv?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === "string") {
+      env[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(DEFAULT_MCP_ENV)) {
+    if (!env[key] || env[key].trim().length === 0) {
       env[key] = value;
     }
   }
@@ -167,6 +178,9 @@ export class McpClientManager {
 
     this.log(
       `[MCP] Connecting with command: ${serverParams.command} ${(serverParams.args || []).join(" ")}`
+    );
+    this.log(
+      `[MCP] Effective env: HUGE_AI_SEARCH_IMAGE_DRIVER=${serverParams.env?.HUGE_AI_SEARCH_IMAGE_DRIVER || "(unset)"}, HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS=${serverParams.env?.HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS || "(unset)"}, HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER=${serverParams.env?.HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER || "(unset)"}`
     );
     if (serverParams.cwd) {
       this.log(`[MCP] CWD: ${serverParams.cwd}`);

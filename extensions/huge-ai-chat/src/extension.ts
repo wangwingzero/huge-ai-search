@@ -8,92 +8,10 @@ import { McpClientManager } from "./mcp/McpClientManager";
 let controller: ChatController | null = null;
 
 class HugeSidebarViewProvider implements vscode.WebviewViewProvider {
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(private readonly controller: ChatController) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
-    const nonce = getNonce();
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.extensionUri],
-    };
-    webviewView.webview.html = this.buildHtml(webviewView.webview, nonce);
-    webviewView.webview.onDidReceiveMessage((payload: unknown) => {
-      const message = payload as { type?: unknown };
-      if (message?.type === "openChat") {
-        void vscode.commands.executeCommand("hugeAiChat.openChat");
-      }
-    });
-  }
-
-  private buildHtml(webview: vscode.Webview, nonce: string): string {
-    return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HUGE</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 12px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
-      font-family: var(--vscode-font-family);
-    }
-    .wrap {
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 8px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .title {
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: 0.4px;
-      margin: 0;
-    }
-    .desc {
-      margin: 0;
-      color: var(--vscode-descriptionForeground);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .btn {
-      height: 30px;
-      border-radius: 6px;
-      border: 1px solid var(--vscode-button-border, transparent);
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 0 12px;
-      align-self: flex-start;
-    }
-    .btn:hover {
-      background: var(--vscode-button-hoverBackground);
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h1 class="title">HUGE</h1>
-    <p class="desc">点击下方按钮打开 HUGE 聊天面板。</p>
-    <button id="openBtn" class="btn" type="button">打开 HUGE</button>
-  </div>
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const btn = document.getElementById("openBtn");
-    btn?.addEventListener("click", () => {
-      vscode.postMessage({ type: "openChat" });
-    });
-  </script>
-</body>
-</html>`;
+    this.controller.attachSidebarView(webviewView);
   }
 }
 
@@ -353,7 +271,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       "hugeAiChat.home",
-      new HugeSidebarViewProvider(context.extensionUri)
+      new HugeSidebarViewProvider(controller),
+      { webviewOptions: { retainContextWhenHidden: true } }
     )
   );
 

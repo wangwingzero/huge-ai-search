@@ -1,10 +1,10 @@
 {
-  "name": "huge-ai-chat",
+  "name": "huge-ai-search",
   "publisher": "wangwingzero",
   "displayName": "HUGE",
-  "description": "在 VS Code 中直接与 HUGE AI Mode 对话（复用 huge-ai-search MCP）",
+  "description": "huge-ai-search 插件版 — 在 VS Code 中直接与 HUGE AI Mode 对话",
   "icon": "media/huge-ai-chat-icon.png",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "TigerWang",
   "license": "MIT",
   "repository": {
@@ -148,7 +148,11 @@
         },
         "hugeAiChat.mcp.env": {
           "type": "object",
-          "default": {},
+          "default": {
+            "HUGE_AI_SEARCH_IMAGE_DRIVER": "playwright",
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "55000",
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.15"
+          },
           "additionalProperties": {
             "type": "string"
           },
@@ -161,19 +165,20 @@
     "clean": "node -e \"try{require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('artifacts',{recursive:true,force:true});}catch(e){}\"",
     "check:release": "node scripts/check-release-readiness.js",
     "check:publish-secrets": "node scripts/check-release-readiness.js --require-secrets",
-    "compile": "tsc -p .",
-    "watch": "tsc -w -p .",
+    "compile": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "test": "npm run check:release && npm run compile && node --test",
-    "package:vsix": "npm run check:release && npm run compile && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && npx @vscode/vsce package --no-dependencies -o artifacts/huge-ai-chat.vsix",
+    "package:vsix": "npm run check:release && npm run compile && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && npx @vscode/vsce package --no-dependencies -o artifacts/huge-ai-search.vsix",
     "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.7.1",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.27.3",
     "ovsx": "^0.10.4",
     "typescript": "^5.3.0"
   }

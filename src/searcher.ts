@@ -29,6 +29,10 @@ function log(level: "INFO" | "ERROR" | "DEBUG" | "CAPTCHA", message: string): vo
   writeLog(level, message, "Searcher");
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 export interface SearchSource {
   title: string;
   url: string;
@@ -47,6 +51,16 @@ interface FileInputSnapshot {
   total: number;
   imageAcceptInputs: number;
   inputsWithFiles: number;
+}
+
+type ImageDriverMode = "playwright" | "nodriver" | "nodriver-only";
+
+interface ImageUploadWaitProfile {
+  attachmentReadyMs: number;
+  uploadProgressMs: number;
+  postUploadSettleMs: number;
+  fileSizeMb: number;
+  multiplier: number;
 }
 
 interface NodriverBridgeResult {
@@ -310,6 +324,13 @@ const NODRIVER_LOGIN_URL = "https://www.google.com/search?q=hello&udm=50";
 const NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME = "nodriver_image_search_bridge_v2.py";
 const NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS = 70;
 const NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT = true;
+const NODRIVER_IMAGE_FAST_ATTEMPT_TIMEOUT_SECONDS = 28;
+const IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS = 8000;
+const IMAGE_UPLOAD_PROGRESS_BASE_MS = 12000;
+const IMAGE_UPLOAD_SETTLE_BASE_MS = 1800;
+const IMAGE_UPLOAD_MAX_ATTACHMENT_READY_MS = 30000;
+const IMAGE_UPLOAD_MAX_PROGRESS_MS = 50000;
+const IMAGE_UPLOAD_MAX_SETTLE_MS = 6000;
 
 const NODRIVER_IMAGE_SEARCH_BRIDGE_SCRIPT = String.raw`#!/usr/bin/env python3
 import argparse
@@ -2505,11 +2526,17 @@ export class AISearcher {
     };
   }
 
-  private shouldUseNodriverImageSearch(): boolean {
+  private getImageDriverMode(): ImageDriverMode {
     const driver = (process.env.HUGE_AI_SEARCH_IMAGE_DRIVER || "playwright")
       .trim()
       .toLowerCase();
-    return driver === "nodriver";
+    if (driver === "nodriver-only") {
+      return "nodriver-only";
+    }
+    if (driver === "nodriver") {
+      return "nodriver";
+    }
+    return "playwright";
   }
 
   private getNodriverImageSearchTimeoutSeconds(): number {
@@ -2520,6 +2547,24 @@ export class AISearcher {
       return Math.floor(configured);
     }
     return NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS;
+  }
+
+  private getNodriverImageFastAttemptTimeoutSeconds(): number {
+    const configured = Number(
+      process.env.HUGE_AI_SEARCH_NODRIVER_IMAGE_FAST_ATTEMPT_SECONDS || ""
+    );
+    if (Number.isFinite(configured) && configured >= 12 && configured <= 120) {
+      return Math.floor(configured);
+    }
+    return NODRIVER_IMAGE_FAST_ATTEMPT_TIMEOUT_SECONDS;
+  }
+
+  private getNodriverImageAttemptTimeoutSeconds(mode: ImageDriverMode): number {
+    const fullTimeout = this.getNodriverImageSearchTimeoutSeconds();
+    if (mode === "nodriver-only") {
+      return fullTimeout;
+    }
+    return Math.min(fullTimeout, this.getNodriverImageFastAttemptTimeoutSeconds());
   }
 
   private useNodriverImageSearchHeadless(): boolean {
@@ -2623,7 +2668,8 @@ export class AISearcher {
   private async runNodriverImageSearch(
     query: string,
     language: string,
-    imagePath: string
+    imagePath: string,
+    timeoutSecondsOverride?: number
   ): Promise<SearchResult> {
     const result: SearchResult = {
       success: false,
@@ -2633,14 +2679,9 @@ export class AISearcher {
       error: "",
     };
 
-    if (!this.shouldUseNodriverImageSearch()) {
-      result.error = "nodriver 图片搜索已禁用（HUGE_AI_SEARCH_IMAGE_DRIVER != nodriver）";
-      return result;
-    }
-
     const scriptPath = this.ensureNodriverImageSearchScript();
-    const timeoutSeconds = this.getNodriverImageSearchTimeoutSeconds();
-    const timeoutMs = Math.max((timeoutSeconds + 30) * 1000, 90_000);
+    const timeoutSeconds = timeoutSecondsOverride ?? this.getNodriverImageSearchTimeoutSeconds();
+    const timeoutMs = Math.max((timeoutSeconds + 12) * 1000, 25_000);
     const absoluteImagePath = path.resolve(imagePath);
     const proxy = await this.detectProxy();
 
@@ -4582,7 +4623,73 @@ export class AISearcher {
     return false;
   }
 
-  private async trySetImageInputFiles(imagePath: string): Promise<boolean> {
+  private getImageUploadFlowBudgetMs(): number {
+    const configured = Number(process.env.HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS || "");
+    if (Number.isFinite(configured) && configured >= 15000 && configured <= 120000) {
+      return Math.floor(configured);
+    }
+    return 42000;
+  }
+
+  private getImageUploadWaitProfile(imagePath: string): ImageUploadWaitProfile {
+    let fileSizeMb = 0;
+    try {
+      const stats = fs.statSync(imagePath);
+      fileSizeMb = Math.max(0, stats.size / (1024 * 1024));
+    } catch {
+      fileSizeMb = 0;
+    }
+
+    let sizeMultiplier = 1;
+    if (fileSizeMb >= 12) {
+      sizeMultiplier = 2.5;
+    } else if (fileSizeMb >= 8) {
+      sizeMultiplier = 2.2;
+    } else if (fileSizeMb >= 4) {
+      sizeMultiplier = 1.7;
+    } else if (fileSizeMb >= 2) {
+      sizeMultiplier = 1.35;
+    }
+
+    const slowNetworkBoost = this.isTruthyEnv(process.env.HUGE_AI_SEARCH_SLOW_NETWORK)
+      ? 1.45
+      : 1;
+    const configuredMultiplier = Number(
+      process.env.HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER || ""
+    );
+    const userMultiplier =
+      Number.isFinite(configuredMultiplier) &&
+      configuredMultiplier >= 0.8 &&
+      configuredMultiplier <= 3
+        ? configuredMultiplier
+        : 1;
+    const multiplier = sizeMultiplier * slowNetworkBoost * userMultiplier;
+
+    return {
+      attachmentReadyMs: clampNumber(
+        Math.round(IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS * multiplier),
+        IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS,
+        IMAGE_UPLOAD_MAX_ATTACHMENT_READY_MS
+      ),
+      uploadProgressMs: clampNumber(
+        Math.round(IMAGE_UPLOAD_PROGRESS_BASE_MS * multiplier),
+        IMAGE_UPLOAD_PROGRESS_BASE_MS,
+        IMAGE_UPLOAD_MAX_PROGRESS_MS
+      ),
+      postUploadSettleMs: clampNumber(
+        Math.round(IMAGE_UPLOAD_SETTLE_BASE_MS * multiplier),
+        IMAGE_UPLOAD_SETTLE_BASE_MS,
+        IMAGE_UPLOAD_MAX_SETTLE_MS
+      ),
+      fileSizeMb,
+      multiplier,
+    };
+  }
+
+  private async trySetImageInputFiles(
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
     if (!this.page) return false;
 
     for (const selector of IMAGE_FILE_INPUT_SELECTORS) {
@@ -4595,14 +4702,14 @@ export class AISearcher {
             const accept = await input.getAttribute("accept") || "(无)";
             console.error(`setInputFiles 成功: selector='${selector}', accept='${accept}'`);
             if (
-              (await this.waitForImageAttachmentReady(imagePath, 8000)) &&
-              (await this.waitForUploadProgressDone(12000))
+              (await this.waitForImageAttachmentReady(imagePath, waitProfile.attachmentReadyMs)) &&
+              (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs))
             ) {
               console.error("检测到附件就绪且上传进度已完成");
               return true;
             }
             if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
-              if (await this.waitForUploadProgressDone(12000)) {
+              if (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs)) {
                 console.error(
                   `setInputFiles 后检测到输入结构变化且上传进度完成，按上传成功处理: selector='${selector}'`
                 );
@@ -4882,7 +4989,11 @@ export class AISearcher {
     return false;
   }
 
-  private async tryUploadViaFileChooser(trigger: any, imagePath: string): Promise<boolean> {
+  private async tryUploadViaFileChooser(
+    trigger: any,
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
     if (!this.page) return false;
 
     try {
@@ -4902,16 +5013,16 @@ export class AISearcher {
 
       await chooser.setFiles(imagePath);
       console.error("通过 filechooser 上传图片");
-      await this.page.waitForTimeout(900);
+      await this.page.waitForTimeout(Math.max(800, Math.floor(waitProfile.postUploadSettleMs / 2)));
       if (
-        (await this.waitForImageAttachmentReady(imagePath, 8000)) &&
-        (await this.waitForUploadProgressDone(12000))
+        (await this.waitForImageAttachmentReady(imagePath, waitProfile.attachmentReadyMs)) &&
+        (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs))
       ) {
         console.error("filechooser 检测到附件就绪且上传进度已完成");
         return true;
       }
       if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
-        if (await this.waitForUploadProgressDone(12000)) {
+        if (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs)) {
           console.error("filechooser 上传后检测到输入结构变化且上传进度完成，按上传成功处理");
           return true;
         }
@@ -4923,7 +5034,10 @@ export class AISearcher {
     }
   }
 
-  private async tryUploadViaVisibleOptions(imagePath: string): Promise<boolean> {
+  private async tryUploadViaVisibleOptions(
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
     if (!this.page) return false;
 
     for (const selector of IMAGE_UPLOAD_OPTION_SELECTORS) {
@@ -4935,14 +5049,14 @@ export class AISearcher {
             continue;
           }
           console.error(`点击图片上传选项: ${selector}`);
-          if (await this.tryUploadViaFileChooser(option, imagePath)) {
+          if (await this.tryUploadViaFileChooser(option, imagePath, waitProfile)) {
             return true;
           }
           if (!this.page) return false;
           await this.page.waitForTimeout(300);
-          if (await this.trySetImageInputFiles(imagePath)) {
+          if (await this.trySetImageInputFiles(imagePath, waitProfile)) {
             console.error("通过上传选项点击后直接文件输入上传图片");
-            if (this.page) await this.page.waitForTimeout(1800);
+            if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
             return true;
           }
         }
@@ -4954,7 +5068,10 @@ export class AISearcher {
     return false;
   }
 
-  private async tryUploadViaMoreInputMenu(imagePath: string): Promise<boolean> {
+  private async tryUploadViaMoreInputMenu(
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
     if (!this.page) return false;
 
     for (const selector of IMAGE_UPLOAD_MENU_TRIGGER_SELECTORS) {
@@ -4974,13 +5091,13 @@ export class AISearcher {
           if (!this.page) return false;
           await this.waitForUploadOptionsVisible(1800);
 
-          if (await this.tryUploadViaVisibleOptions(imagePath)) {
+          if (await this.tryUploadViaVisibleOptions(imagePath, waitProfile)) {
             return true;
           }
 
-          if (await this.trySetImageInputFiles(imagePath)) {
+          if (await this.trySetImageInputFiles(imagePath, waitProfile)) {
             console.error("通过打开上传菜单后直接文件输入上传图片");
-            if (this.page) await this.page.waitForTimeout(1800);
+            if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
             return true;
           }
         }
@@ -4995,25 +5112,36 @@ export class AISearcher {
   private async uploadImageAttachment(imagePath: string): Promise<boolean> {
     if (!this.page) return false;
 
+    const waitProfile = this.getImageUploadWaitProfile(imagePath);
+    const flowBudgetMs = this.getImageUploadFlowBudgetMs();
+    const startMs = Date.now();
+    console.error(
+      `图片上传等待策略: fileSize=${waitProfile.fileSizeMb.toFixed(2)}MB, multiplier=${waitProfile.multiplier.toFixed(2)}, ready=${waitProfile.attachmentReadyMs}ms, progress=${waitProfile.uploadProgressMs}ms, settle=${waitProfile.postUploadSettleMs}ms, flowBudget=${flowBudgetMs}ms`
+    );
+
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (!this.page) return false;
+      if (Date.now() - startMs >= flowBudgetMs) {
+        console.error(`图片上传超出流程预算（${flowBudgetMs}ms），提前结束重试`);
+        return false;
+      }
       if (attempt > 0) {
-        await this.page.waitForTimeout(700);
+        await this.page.waitForTimeout(500);
       }
 
-      if (await this.trySetImageInputFiles(imagePath)) {
+      if (await this.trySetImageInputFiles(imagePath, waitProfile)) {
         console.error("通过直接文件输入上传图片");
         // 等待 Google 处理上传的图片
-        if (this.page) await this.page.waitForTimeout(2000);
+        if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
         return true;
       }
 
-      if (await this.tryUploadViaMoreInputMenu(imagePath)) {
+      if (await this.tryUploadViaMoreInputMenu(imagePath, waitProfile)) {
         return true;
       }
 
-      if (await this.tryUploadViaVisibleOptions(imagePath)) {
+      if (await this.tryUploadViaVisibleOptions(imagePath, waitProfile)) {
         return true;
       }
     }
@@ -5225,6 +5353,9 @@ export class AISearcher {
     // 确保 imagePath 是字符串类型，否则使用 undefined
     const normalizedImagePath = typeof imagePath === "string" ? imagePath.trim() : undefined;
     const hasImageInput = Boolean(normalizedImagePath);
+    const imageDriverMode: ImageDriverMode = hasImageInput
+      ? this.getImageDriverMode()
+      : "playwright";
     const effectivePrompt = normalizedQuery;
     let absoluteImagePath: string | undefined;
 
@@ -5232,6 +5363,9 @@ export class AISearcher {
     console.error(
       `开始搜索: query='${normalizedQuery}', language=${language}, image=${hasImageInput ? normalizedImagePath : "none"}`
     );
+    if (hasImageInput) {
+      console.error(`图片搜索驱动模式: ${imageDriverMode}`);
+    }
 
     this.lastActivityTime = Date.now();
 
@@ -5257,21 +5391,36 @@ export class AISearcher {
       return result;
     }
 
-    if (hasImageInput && normalizedImagePath && this.shouldUseNodriverImageSearch()) {
+    if (
+      hasImageInput &&
+      normalizedImagePath &&
+      (imageDriverMode === "nodriver" || imageDriverMode === "nodriver-only")
+    ) {
       try {
+        const nodriverAttemptTimeout = this.getNodriverImageAttemptTimeoutSeconds(imageDriverMode);
         const nodriverResult = await this.runNodriverImageSearch(
           effectivePrompt,
           language,
-          normalizedImagePath
+          normalizedImagePath,
+          nodriverAttemptTimeout
         );
         if (nodriverResult.success) {
           this.lastAiAnswer = nodriverResult.aiAnswer;
           this.lastActivityTime = Date.now();
           return nodriverResult;
         }
-        console.error(`nodriver 图片搜索失败，回退 Playwright: ${nodriverResult.error}`);
+        if (imageDriverMode === "nodriver-only") {
+          return nodriverResult;
+        }
+        console.error(
+          `nodriver 图片搜索失败（快速回退到 Playwright）: ${nodriverResult.error}`
+        );
       } catch (error) {
-        console.error(`nodriver 图片搜索异常，回退 Playwright: ${error}`);
+        if (imageDriverMode === "nodriver-only") {
+          result.error = `nodriver 图片搜索异常: ${error}`;
+          return result;
+        }
+        console.error(`nodriver 图片搜索异常，快速回退 Playwright: ${error}`);
       }
     }
 

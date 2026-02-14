@@ -1178,8 +1178,13 @@
     }
   }
 
-  function renderMessages() {
+  function renderMessages(forceScrollToBottom) {
     const thread = getActiveThread();
+
+    // Capture scroll state before clearing DOM
+    var savedScrollTop = dom.messages.scrollTop;
+    var nearBottom = dom.messages.scrollHeight - dom.messages.scrollTop - dom.messages.clientHeight < 80;
+
     dom.messages.innerHTML = "";
 
     if (!thread) {
@@ -1236,7 +1241,12 @@
       dom.messages.appendChild(wrapper);
     }
 
-    dom.messages.scrollTop = dom.messages.scrollHeight;
+    // Only scroll to bottom if: forced (thread switch / initial load), or user was already near bottom
+    if (forceScrollToBottom || nearBottom) {
+      dom.messages.scrollTop = dom.messages.scrollHeight;
+    } else {
+      dom.messages.scrollTop = savedScrollTop;
+    }
     renderComposerState();
   }
 
@@ -1494,7 +1504,8 @@
         }
         pruneThreadStatus();
         renderThreads();
-        renderMessages();
+        var threadChanged = message.type === "state/full" || previousActiveThreadId !== state.activeThreadId;
+        renderMessages(threadChanged);
         renderAuthBanner();
         renderStatusBar();
         break;
