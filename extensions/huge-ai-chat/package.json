@@ -150,8 +150,8 @@
           "type": "object",
           "default": {
             "HUGE_AI_SEARCH_IMAGE_DRIVER": "playwright",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "55000",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.15"
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "35000",
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.0"
           },
           "additionalProperties": {
             "type": "string"
