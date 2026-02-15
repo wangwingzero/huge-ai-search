@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: huge-ai-chat-auto-tag-${{ github.ref }}
@@ -62,3 +63,10 @@ jobs:
           git tag "$TAG"
           git push origin HEAD:main
           git push origin "$TAG"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Trigger publish workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run huge-ai-chat.yml --ref "$RELEASE_TAG" -f publish=true
