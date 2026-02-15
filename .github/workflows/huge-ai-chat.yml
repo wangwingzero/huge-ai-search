@@ -94,6 +94,15 @@ jobs:
           fi
           echo "VSIX_PATH=$VSIX_PATH" >> "$GITHUB_ENV"
 
+      - name: Resolve extension publisher
+        run: |
+          PUBLISHER="$(node -p "require('./extensions/huge-ai-chat/package.json').publisher")"
+          if [ -z "$PUBLISHER" ]; then
+            echo "Publisher not found in extensions/huge-ai-chat/package.json"
+            exit 1
+          fi
+          echo "PUBLISHER=$PUBLISHER" >> "$GITHUB_ENV"
+
       - name: Validate release readiness (publisher + OpenVSX secret)
         working-directory: extensions/huge-ai-chat
         env:
@@ -103,7 +112,8 @@ jobs:
       - name: Ensure Open VSX namespace exists
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx ovsx create-namespace wangwingzero -p "$OVSX_PAT" || true
+          PUBLISHER: ${{ env.PUBLISHER }}
+        run: npx ovsx create-namespace "$PUBLISHER" -p "$OVSX_PAT" || true
 
       - name: Publish to Open VSX
         env:
