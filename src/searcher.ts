@@ -2236,6 +2236,24 @@ export class AISearcher {
   private loadStorageState(): string | undefined {
     const sessionStatePath = this.getStorageStatePath();
     const sharedStatePath = this.getSharedStorageStatePath();
+    const hasSessionState = fs.existsSync(sessionStatePath);
+    const hasSharedState = fs.existsSync(sharedStatePath);
+
+    // 0. 如果共享状态更新，优先覆盖会话状态，避免使用陈旧认证信息
+    if (hasSessionState && hasSharedState) {
+      try {
+        const sessionMtime = fs.statSync(sessionStatePath).mtimeMs;
+        const sharedMtime = fs.statSync(sharedStatePath).mtimeMs;
+        if (sharedMtime > sessionMtime + 1) {
+          fs.copyFileSync(sharedStatePath, sessionStatePath);
+          console.error(
+            `检测到共享认证状态更新，覆盖会话状态: ${sharedStatePath} -> ${sessionStatePath}`
+          );
+        }
+      } catch (error) {
+        console.error(`同步共享认证状态失败: ${error}`);
+      }
+    }
 
     // 1. 优先检查会话目录下的认证状态
     if (fs.existsSync(sessionStatePath)) {
@@ -2244,7 +2262,7 @@ export class AISearcher {
     }
 
     // 2. 如果会话目录没有，尝试从共享目录复制
-    if (fs.existsSync(sharedStatePath)) {
+    if (hasSharedState) {
       try {
         fs.copyFileSync(sharedStatePath, sessionStatePath);
         console.error(`从共享目录复制认证状态: ${sharedStatePath} -> ${sessionStatePath}`);
@@ -2911,12 +2929,21 @@ export class AISearcher {
   private async saveStorageState(): Promise<void> {
     if (!this.context) return;
 
+    const storageStatePath = this.getStorageStatePath();
     try {
-      const storageStatePath = this.getStorageStatePath();
       await this.context.storageState({ path: storageStatePath });
       console.error("已保存存储状态");
     } catch (error) {
       console.error(`保存存储状态失败: ${error}`);
+      return;
+    }
+
+    const sharedStatePath = this.getSharedStorageStatePath();
+    try {
+      fs.copyFileSync(storageStatePath, sharedStatePath);
+      console.error(`已同步共享存储状态: ${sharedStatePath}`);
+    } catch (error) {
+      console.error(`同步共享存储状态失败: ${error}`);
     }
   }
 

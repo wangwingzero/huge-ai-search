@@ -662,6 +662,25 @@ function isLoginTimeoutError(error: string): boolean {
   return timeoutKeywords.some((kw) => errorLower.includes(kw.toLowerCase()));
 }
 
+// 检查是否为“验证已完成但需要立即重试”的错误
+function isVerificationCompletedRetryError(error: string): boolean {
+  const normalized = error.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const mentionsVerification =
+    normalized.includes("验证已完成") ||
+    normalized.includes("验证已通过") ||
+    (normalized.includes("verification") && normalized.includes("passed"));
+  const requestsRetry =
+    normalized.includes("重新搜索") ||
+    normalized.includes("请重试") ||
+    normalized.includes("retry");
+
+  return mentionsVerification && requestsRetry;
+}
+
 // 创建 MCP 服务器
 const server = new McpServer({
   name: "huge-ai-search",
@@ -943,11 +962,25 @@ server.tool(
         `搜索结果: success=${result.success}, error=${result.success ? "N/A" : result.error}`
       );
 
-      // 检查是否是 CAPTCHA 被其他请求处理的情况
-      if (!result.success && result.error === "CAPTCHA_HANDLED_BY_OTHER_REQUEST") {
-        console.error("CAPTCHA 已被其他请求处理，自动重试搜索...");
+      // 检查是否需要在同一次调用内自动重试
+      const shouldRetryAfterCaptchaHandled =
+        !result.success && result.error === "CAPTCHA_HANDLED_BY_OTHER_REQUEST";
+      const shouldRetryAfterVerificationCompleted =
+        !result.success && isVerificationCompletedRetryError(result.error);
+      if (shouldRetryAfterCaptchaHandled || shouldRetryAfterVerificationCompleted) {
+        if (shouldRetryAfterCaptchaHandled) {
+          console.error("CAPTCHA 已被其他请求处理，自动重试搜索...");
+        } else {
+          console.error(`检测到验证已完成信号（${result.error}），自动重试搜索...`);
+        }
+
         // 标记 CAPTCHA 处理结束（可能是其他请求完成的）
         markCaptchaEnd();
+        if (shouldRetryAfterVerificationCompleted) {
+          // 给认证状态文件留出短暂落盘/复制时间
+          await sleep(1200);
+        }
+
         const elapsedBeforeRetryMs = Date.now() - requestStartMs;
         const retryRemainingMs =
           requestTotalBudgetMs - elapsedBeforeRetryMs - REQUEST_BUDGET_SAFETY_MS;
@@ -987,6 +1020,7 @@ server.tool(
           };
         }
         // 重试也失败了，继续走下面的错误处理逻辑
+        result = retryResult;
         console.error(`重试搜索也失败: ${retryResult.error}`);
       }
 
@@ -1019,6 +1053,22 @@ server.tool(
                 `1. 完成 Google 登录或验证码验证\n` +
                 `2. 关闭浏览器窗口（认证状态会自动保存）\n` +
                 `3. 之后搜索就能正常工作了`,
+            },
+          ],
+        };
+      }
+
+      if (!result.success && isVerificationCompletedRetryError(result.error)) {
+        markCaptchaEnd();
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `## 🔁 验证已完成\n\n` +
+                `**状态**: ${result.error}\n\n` +
+                `系统已在本次调用内自动重试 1 次，但仍未拿到有效结果。\n` +
+                `请立即再次发起同一请求；若仍反复出现，请执行 setup 重新刷新认证状态。`,
             },
           ],
         };
