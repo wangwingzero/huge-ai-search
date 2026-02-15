@@ -4,7 +4,7 @@
   "displayName": "HUGE",
   "description": "huge-ai-search 插件版 — 在 VS Code 中直接与 HUGE AI Mode 对话",
   "icon": "media/huge-ai-chat-icon.png",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "author": "TigerWang",
   "license": "MIT",
   "repository": {
