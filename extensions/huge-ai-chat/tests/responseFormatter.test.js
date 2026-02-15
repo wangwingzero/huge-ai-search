@@ -121,3 +121,26 @@ test("parseSearchToolText should escape brackets in source title", () => {
   assert.equal(parsed.sources.length, 1);
   assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
 });
+
+test("parseSearchToolText should strip plain source tail cards without markdown links", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "这是正文段落。",
+    "您是想了解如何通过 API 调用最新模型，还是想在 Claude.ai 网页端直接体验它的功能？",
+    "",
+    "Claude Opus 4.6 - Anthropic",
+    "2026年2月5日 — Announcements * NEW. Claude Op...",
+    "Anthropic",
+    "Models overview - Claude API Docs",
+    "Table_title: Latest models comparison",
+    "Claude Developer Platform",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.match(parsed.renderedMarkdown, /这是正文段落/);
+  assert.match(parsed.renderedMarkdown, /Claude\.ai 网页端直接体验/);
+  assert.doesNotMatch(parsed.renderedMarkdown, /Claude Opus 4\.6 - Anthropic/);
+  assert.doesNotMatch(parsed.renderedMarkdown, /Table_title:/);
+});

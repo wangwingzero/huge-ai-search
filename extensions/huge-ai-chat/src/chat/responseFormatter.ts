@@ -159,7 +159,67 @@ function stripTrailingSourceText(text: string): string {
     /\n{2,}(?:\s*\d+\.\s*\[[^\n]+?\]\(\s*<?https?:\/\/[^\n>]+>?\s*\)\s*\n?)+\s*$/gi,
     ""
   );
-  return byNumberedLinks.trim();
+
+  const paragraphs = byNumberedLinks
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (paragraphs.length <= 1) {
+    return byNumberedLinks.trim();
+  }
+
+  let keepUntil = paragraphs.length;
+  for (let index = paragraphs.length - 1; index >= 0; index -= 1) {
+    if (isSourceTailParagraph(paragraphs[index])) {
+      keepUntil = index;
+      continue;
+    }
+    break;
+  }
+
+  if (keepUntil === paragraphs.length) {
+    return byNumberedLinks.trim();
+  }
+  return paragraphs.slice(0, keepUntil).join("\n\n").trim();
+}
+
+function isSourceTailParagraph(paragraph: string): boolean {
+  const lines = paragraph
+    .split("\n")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (!lines.length) {
+    return false;
+  }
+
+  let score = 0;
+  if (lines.some((line) => /https?:\/\/|www\./i.test(line))) {
+    score += 3;
+  }
+  if (lines.some((line) => /table_(title|content)\s*:/i.test(line))) {
+    score += 2;
+  }
+  if (lines.some((line) => /^\d{4}年\d{1,2}月\d{1,2}日\s*[—-]/.test(line) || /^\w{3,9}\s+\d{1,2},\s+\d{4}/.test(line))) {
+    score += 2;
+  }
+  if (lines.some((line) => /[A-Za-z][A-Za-z0-9 .,&'/:()\-]{2,}\s-\s[A-Za-z]/.test(line))) {
+    score += 2;
+  }
+  if (lines.some((line) => /^[A-Za-z][A-Za-z0-9 .&'/:()\-]{1,40}$/.test(line))) {
+    score += 1;
+  }
+  if (
+    lines.length >= 3 &&
+    lines.filter((line) => line.length <= 96).length / lines.length >= 0.7 &&
+    lines.some((line) => /[A-Za-z]/.test(line))
+  ) {
+    score += 1;
+  }
+  if (lines.every((line) => !/[。！？]$/.test(line))) {
+    score += 1;
+  }
+
+  return score >= 3;
 }
 
 function normalizeErrorBody(raw: string): string {
