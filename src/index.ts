@@ -24,6 +24,40 @@ function log(level: "INFO" | "ERROR" | "DEBUG", message: string): void {
   writeLog(level, message);
 }
 
+function loadPackageVersion(): string {
+  try {
+    const packageJsonPath = path.resolve(__dirname, "..", "package.json");
+    const raw = fs.readFileSync(packageJsonPath, "utf-8");
+    const parsed = JSON.parse(raw) as { version?: string };
+    if (parsed.version && typeof parsed.version === "string") {
+      return parsed.version;
+    }
+  } catch (error) {
+    log("ERROR", `读取 package.json 版本失败: ${error}`);
+  }
+  return process.env.npm_package_version || "0.0.0";
+}
+
+function getReleaseChannel(version: string): "stable" | "pre-release" {
+  return version.includes("-") ? "pre-release" : "stable";
+}
+
+const MCP_SERVER_NAME = "huge-ai-search";
+const MCP_SERVER_VERSION = loadPackageVersion();
+const MCP_RELEASE_CHANNEL = getReleaseChannel(MCP_SERVER_VERSION);
+
+function handleCliFlags(): void {
+  const args = new Set(process.argv.slice(2));
+  if (args.has("--version") || args.has("-v")) {
+    console.log(`${MCP_SERVER_VERSION} (${MCP_RELEASE_CHANNEL})`);
+    process.exit(0);
+  }
+  if (args.has("--release-channel")) {
+    console.log(MCP_RELEASE_CHANNEL);
+    process.exit(0);
+  }
+}
+
 // 工具描述
 const TOOL_DESCRIPTION = `使用 AI 模式搜索，获取 AI 总结的搜索结果。
 
@@ -382,6 +416,7 @@ function formatSearchResult(
   if (sessionId) {
     output += `🔑 **会话 ID**: \`${sessionId}\`\n\n`;
   }
+  output += `📦 **服务版本**: \`${MCP_SERVER_VERSION}\`（${MCP_RELEASE_CHANNEL}）\n\n`;
   output += `🧾 **运行日志**: \`${getLogPath()}\`\n\n`;
   output += `📁 **日志目录**: \`${getLogDir()}\`（默认保留 ${getLogRetentionDays()} 天）\n\n`;
   output += `💡 **提示**: 如需深入了解，可以设置 \`follow_up: true\`${sessionId ? ` 并传入 \`session_id: "${sessionId}"\`` : ''} 进行追问，AI 会在当前对话上下文中继续回答。\n`;
@@ -683,8 +718,8 @@ function isVerificationCompletedRetryError(error: string): boolean {
 
 // 创建 MCP 服务器
 const server = new McpServer({
-  name: "huge-ai-search",
-  version: "1.1.0",
+  name: MCP_SERVER_NAME,
+  version: MCP_SERVER_VERSION,
 });
 
 // 注册工具
@@ -1182,7 +1217,10 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log("INFO", `Huge AI Search MCP Server 已启动，日志文件: ${getLogPath()}`);
+  log(
+    "INFO",
+    `Huge AI Search MCP Server 已启动: name=${MCP_SERVER_NAME}, version=${MCP_SERVER_VERSION}, channel=${MCP_RELEASE_CHANNEL}, 日志文件: ${getLogPath()}`
+  );
   log("INFO", `日志目录: ${getLogDir()}（默认保留 ${getLogRetentionDays()} 天）`);
   log(
     "INFO",
@@ -1190,6 +1228,7 @@ async function main() {
   );
 }
 
+handleCliFlags();
 main().catch((error) => {
   log("ERROR", `服务器启动失败: ${error}`);
   process.exit(1);

@@ -65,3 +65,11 @@ docs/
 
 # VS Code extension build artifacts
 extensions/huge-ai-chat/artifacts/
+
+# Local debug/temp artifacts
+tmp/
+tmp_*/
+tmp*
+error.txt
+output.txt
+nul

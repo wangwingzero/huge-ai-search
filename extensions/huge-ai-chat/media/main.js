@@ -294,7 +294,7 @@
       kind: "progress",
       title: "响应较慢但流程正常",
       detail: `当前网络或页面响应较慢，请求仍在执行（${timeText}）。`,
-      suggestion: "若长时间无返回，可点击 Retry，或执行 Run Setup 后重试。",
+      suggestion: "",
       timeText,
     };
   }
@@ -871,7 +871,7 @@
         break;
       }
 
-      if (codeLikeCount < 2) {
+      if (codeLikeCount < 1) {
         out.push(lines[i]);
         i += 1;
         continue;
@@ -1029,8 +1029,9 @@
     text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
     text = text.replace(
-      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      (_, label, url) => {
+      /\[([^\]]+)\]\((?:<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
+      (_, label, angleWrappedUrl, plainUrl) => {
+        const url = angleWrappedUrl || plainUrl || "";
         const safeUrl = sanitizeHttpUrl(url);
         if (!safeUrl) {
           return label;
@@ -1057,7 +1058,12 @@
         `<div class="code-block">`,
         `  <div class="code-toolbar">`,
         `    <span class="code-lang">${escapeHtml(languageLabel)}</span>`,
-        `    <button type="button" class="mini-btn copy-code-btn" data-label="复制代码">复制代码</button>`,
+        `    <button type="button" class="mini-btn icon-btn copy-code-btn" data-label="复制代码" data-tooltip="复制代码" title="复制代码" aria-label="复制代码">`,
+        `      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">`,
+        `        <path d="M5.75 1h6.5A1.75 1.75 0 0 1 14 2.75v6.5A1.75 1.75 0 0 1 12.25 11h-6.5A1.75 1.75 0 0 1 4 9.25v-6.5A1.75 1.75 0 0 1 5.75 1Zm0 1a.75.75 0 0 0-.75.75v6.5c0 .414.336.75.75.75h6.5a.75.75 0 0 0 .75-.75v-6.5a.75.75 0 0 0-.75-.75h-6.5Z"></path>`,
+        `        <path d="M2.75 5A1.75 1.75 0 0 0 1 6.75v6.5C1 14.216 1.784 15 2.75 15h6.5A1.75 1.75 0 0 0 11 13.25V13h-1v.25a.75.75 0 0 1-.75.75h-6.5a.75.75 0 0 1-.75-.75v-6.5a.75.75 0 0 1 .75-.75H3V5h-.25Z"></path>`,
+        `      </svg>`,
+        `    </button>`,
         `  </div>`,
         `  <pre><code>${escapeHtml(block.code)}</code></pre>`,
         `</div>`,
