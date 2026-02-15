@@ -1,12 +1,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { SetupRunner } from "../auth/SetupRunner";
 import { McpClientManager, McpWarmupResult } from "../mcp/McpClientManager";
 import { ThreadStore } from "./ThreadStore";
 import { isAuthRelatedError, isNoRecordResponseText, parseSearchToolText } from "./responseFormatter";
 import {
+  ChatAttachment,
   ChatStatusKind,
   HostToPanelMessage,
   PanelToHostMessage,
@@ -20,6 +22,7 @@ const MAX_PASTED_IMAGE_BYTES = 15 * 1024 * 1024;
 const TEMP_IMAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TEMP_IMAGE_CLEANUP_DELAY_MS = 10 * 60 * 1000;
 const TEMP_IMAGE_DIR_NAME = "huge-ai-chat-images";
+const AI_IMAGE_CACHE_DIR_NAME = "ai-image-cache";
 const NO_RECORD_MESSAGE = "该词条在当前技术语料库和实时搜索中无可验证记录。";
 const NO_RECORD_DISCLAIMER = "说明：当前仅表示未检索到可验证权威来源，不等于该词条绝对不存在。";
 
@@ -59,6 +62,43 @@ function isSearchLanguage(value: unknown): value is SearchLanguage {
     value === "de-DE" ||
     value === "fr-FR"
   );
+}
+
+function isDataImageUrl(value: string): boolean {
+  return /^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(value);
+}
+
+function sanitizeUserAttachments(input: unknown): ChatAttachment[] {
+  if (!Array.isArray(input) || input.length === 0) {
+    return [];
+  }
+  const out: ChatAttachment[] = [];
+  for (const item of input.slice(0, 12)) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const candidate = item as Partial<ChatAttachment>;
+    if (typeof candidate.id !== "string" || typeof candidate.thumbDataUrl !== "string") {
+      continue;
+    }
+    const thumb = candidate.thumbDataUrl.trim();
+    if (!isDataImageUrl(thumb)) {
+      continue;
+    }
+    const original =
+      typeof candidate.originalDataUrl === "string" && isDataImageUrl(candidate.originalDataUrl.trim())
+        ? candidate.originalDataUrl.trim()
+        : undefined;
+    out.push({
+      id: candidate.id,
+      thumbDataUrl: thumb,
+      originalDataUrl: original,
+      width: typeof candidate.width === "number" ? candidate.width : undefined,
+      height: typeof candidate.height === "number" ? candidate.height : undefined,
+      name: typeof candidate.name === "string" ? candidate.name : undefined,
+    });
+  }
+  return out;
 }
 
 interface ParsedDataUrlImage {
@@ -266,6 +306,7 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
     href?: unknown;
     imageDataUrl?: unknown;
     imageCount?: unknown;
+    attachments?: unknown;
   };
 
   if (typeof candidate.type !== "string") {
@@ -291,6 +332,7 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
     case "chat/retryLast":
       return typeof candidate.threadId === "string";
     case "link/open":
+    case "image/download":
       return typeof candidate.href === "string";
     case "chat/send": {
       const validImageData =
@@ -301,12 +343,27 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
           Number.isFinite(candidate.imageCount) &&
           candidate.imageCount >= 1 &&
           candidate.imageCount <= 32);
+      const validAttachments =
+        candidate.attachments === undefined ||
+        (Array.isArray(candidate.attachments) &&
+          candidate.attachments.length <= 12 &&
+          candidate.attachments.every((item) => {
+            if (!item || typeof item !== "object") {
+              return false;
+            }
+            const typed = item as Partial<ChatAttachment>;
+            return (
+              typeof typed.id === "string" &&
+              typeof typed.thumbDataUrl === "string"
+            );
+          }));
       return (
         typeof candidate.threadId === "string" &&
         typeof candidate.text === "string" &&
         (candidate.language === undefined || isSearchLanguage(candidate.language)) &&
         validImageData &&
-        validImageCount
+        validImageCount &&
+        validAttachments
       );
     }
     default:
@@ -324,7 +381,9 @@ export class ChatController implements vscode.Disposable {
   private readonly lastQueryByThread = new Map<string, string>();
   private warmupTask: Promise<McpWarmupResult> | null = null;
   private readonly tempImageDir = path.join(os.tmpdir(), TEMP_IMAGE_DIR_NAME);
+  private readonly aiImageCacheDir = path.join(os.homedir(), ".huge-ai-search", AI_IMAGE_CACHE_DIR_NAME);
   private tempImageDirPrepared = false;
+  private aiImageCacheDirPrepared = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -332,24 +391,16 @@ export class ChatController implements vscode.Disposable {
     private readonly mcpManager: McpClientManager,
     private readonly setupRunner: SetupRunner,
     private readonly output: vscode.OutputChannel
-  ) {}
+  ) {
+    // 让 SetupRunner 能找到本地 setup.js（与 MCP 服务器同目录）
+    this.setupRunner.setServerDirResolver(() => this.mcpManager.getServerDir());
+  }
 
   private getConfiguredDefaultLanguage(): SearchLanguage {
-    const configured = vscode.workspace
-      .getConfiguration("hugeAiChat")
-      .get<string>("defaultLanguage", "zh-CN");
-    return isSearchLanguage(configured) ? configured : "zh-CN";
+    return "en-US";
   }
 
   private isStrictGroundingEnabled(): boolean {
-    const configuredEnv = vscode.workspace
-      .getConfiguration("hugeAiChat")
-      .get<Record<string, string>>("mcp.env", {});
-    const configuredFlag = configuredEnv?.HUGE_AI_SEARCH_STRICT_GROUNDING;
-    if (typeof configuredFlag === "string" && configuredFlag.trim().length > 0) {
-      return configuredFlag.trim() !== "0";
-    }
-
     const processFlag = process.env.HUGE_AI_SEARCH_STRICT_GROUNDING;
     if (typeof processFlag === "string" && processFlag.trim().length > 0) {
       return processFlag.trim() !== "0";
@@ -587,7 +638,8 @@ export class ChatController implements vscode.Disposable {
           payload.text,
           payload.imageDataUrl,
           payload.imageCount,
-          payload.language
+          payload.language,
+          payload.attachments
         );
         return;
       case "chat/retryLast":
@@ -595,6 +647,9 @@ export class ChatController implements vscode.Disposable {
         return;
       case "link/open":
         await this.openExternalLink(payload.href);
+        return;
+      case "image/download":
+        await this.downloadExternalImage(payload.href);
         return;
       case "auth/runSetup":
         await this.runSetupFlow();
@@ -616,7 +671,9 @@ export class ChatController implements vscode.Disposable {
       .reverse()
       .find(
         (message) =>
-          message.role === "user" && !message.content.trim().startsWith("[附图]")
+          message.role === "user" &&
+          (!Array.isArray(message.attachments) || message.attachments.length === 0) &&
+          message.content.trim().length > 0
       );
     if (!fallback) {
       void vscode.window.showWarningMessage("没有可重试的问题（仅图片消息暂不支持自动重试）。");
@@ -630,7 +687,8 @@ export class ChatController implements vscode.Disposable {
     rawText: string,
     imageDataUrl?: string,
     imageCount?: number,
-    language?: SearchLanguage
+    language?: SearchLanguage,
+    attachments?: ChatAttachment[]
   ): Promise<void> {
     const text = rawText.trim();
     const normalizedImageDataUrl =
@@ -640,6 +698,7 @@ export class ChatController implements vscode.Disposable {
     const normalizedImageCount = normalizedImageDataUrl
       ? Math.max(1, Math.min(32, Math.floor(imageCount || 1)))
       : 0;
+    const normalizedUserAttachments = sanitizeUserAttachments(attachments);
     if (!text && !normalizedImageDataUrl) {
       return;
     }
@@ -701,9 +760,15 @@ export class ChatController implements vscode.Disposable {
       }
     }
 
-    const userText = this.buildUserMessageContent(text, normalizedImageCount);
+    const userText = this.buildUserMessageContent(text);
 
-    const userMessage = await this.store.addMessage(threadId, "user", userText, "done");
+    const userMessage = await this.store.addMessage(
+      threadId,
+      "user",
+      userText,
+      "done",
+      normalizedUserAttachments
+    );
     const pendingMessage = await this.store.addMessage(
       threadId,
       "assistant",
@@ -742,31 +807,41 @@ export class ChatController implements vscode.Disposable {
         throw new Error("线程不存在。");
       }
 
-      const useFollowUp = Boolean(latestThread.sessionId) && !persistedImage;
+      const hasExistingSession = Boolean(latestThread.sessionId);
+      const useFollowUp = hasExistingSession;
+      const { createImage, query: searchQuery } = this.parseCreateImagePrefix(text);
+      const effectiveFollowUp = useFollowUp && !createImage;
       this.postStatus(
         "progress",
         "正在调用搜索服务",
-        useFollowUp
-          ? "当前为追问模式，将复用历史会话上下文。"
-          : persistedImage
-            ? "检测到截图输入，本次将使用新请求并上传图片。"
-            : "当前为新会话，将创建新的搜索会话。",
-        "如果长时间无响应，可执行 “Huge AI Chat: Run Login Setup”。",
+        createImage
+          ? hasExistingSession
+            ? "当前为画图模式（复用会话），将使用 Google AI 的 Create images 功能。"
+            : "当前为画图模式，将使用 Google AI 的 Create images 功能。"
+          : effectiveFollowUp
+            ? persistedImage
+              ? "当前为追问+图片模式，将在当前会话中上传图片并提问。"
+              : "当前为追问模式，将复用历史会话上下文。"
+            : persistedImage
+              ? "检测到截图输入，本次将使用新请求并上传图片。"
+              : "当前为新会话，将创建新的搜索会话。",
+        `如果长时间无响应，可执行 "Huge AI Chat: Run Login Setup"。`,
         threadId
       );
       this.output.appendLine(
-        `[Chat] Search start: thread=${threadId}, follow_up=${useFollowUp}, has_image=${Boolean(persistedImage)}`
+        `[Chat] Search start: thread=${threadId}, follow_up=${effectiveFollowUp}, has_image=${Boolean(persistedImage)}, create_image=${createImage}`
       );
       const requestTimeoutMs = persistedImage
         ? SEARCH_REQUEST_TIMEOUT_IMAGE_MS
         : SEARCH_REQUEST_TIMEOUT_TEXT_MS;
       const resultText = await withTimeout(
         this.mcpManager.callSearch({
-          query: text,
+          query: searchQuery,
           language: targetLanguage,
-          follow_up: useFollowUp,
-          session_id: useFollowUp ? latestThread.sessionId : undefined,
+          follow_up: effectiveFollowUp,
+          session_id: hasExistingSession ? latestThread.sessionId : undefined,
           image_path: persistedImage?.filePath,
+          create_image: createImage || undefined,
         }),
         requestTimeoutMs,
         `请求超时（${Math.floor(requestTimeoutMs / 1000)} 秒），请重试或先执行 “Huge AI Chat: Run Login Setup”。`
@@ -824,9 +899,12 @@ export class ChatController implements vscode.Disposable {
         Boolean(persistedImage)
       );
       const finalNoRecord = serverReturnedNoRecord || forceNoRecord;
-      const finalMarkdown = finalNoRecord
+      const markdownBeforeCache = finalNoRecord
         ? this.buildNoRecordMarkdown()
         : parsed.renderedMarkdown;
+      const finalMarkdown = finalNoRecord
+        ? markdownBeforeCache
+        : await this.cacheRemoteImagesInMarkdown(markdownBeforeCache);
 
       if (forceNoRecord && !serverReturnedNoRecord) {
         this.output.appendLine(
@@ -897,15 +975,28 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private buildUserMessageContent(text: string, imageCount: number): string {
-    if (imageCount <= 0) {
-      return text;
+  private buildUserMessageContent(text: string): string {
+    return text;
+  }
+
+  /**
+   * 检测 /draw 前缀，返回 { createImage, query }。
+   * 带前缀时 createImage=true，query 为去掉前缀后的部分。
+   */
+  private parseCreateImagePrefix(text: string): { createImage: boolean; query: string } {
+    const prefixes = ["/draw ", "/draw\t"];
+    const lower = text.toLowerCase();
+    for (const prefix of prefixes) {
+      if (lower.startsWith(prefix) || text.startsWith(prefix)) {
+        const query = text.slice(prefix.length).trim();
+        return { createImage: true, query: query || text };
+      }
     }
-    const imageLabel = `[附图] ${imageCount} 张${imageCount > 1 ? "（已合并）" : ""}`;
-    if (!text) {
-      return imageLabel;
+    // 也支持前缀后紧跟内容（无空格）的情况
+    if (lower.startsWith("/draw") && text.length > 5) {
+      return { createImage: true, query: text.slice(5).trim() };
     }
-    return `${text}\n\n${imageLabel}`;
+    return { createImage: false, query: text };
   }
 
   private async persistImageAttachment(imageDataUrl: string): Promise<PersistedImageFile> {
@@ -960,6 +1051,135 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  private getImageExtensionFromContentType(contentType: string | null): string {
+    const value = String(contentType || "").toLowerCase();
+    if (value.includes("image/png")) {
+      return "png";
+    }
+    if (value.includes("image/jpeg") || value.includes("image/jpg")) {
+      return "jpg";
+    }
+    if (value.includes("image/webp")) {
+      return "webp";
+    }
+    if (value.includes("image/gif")) {
+      return "gif";
+    }
+    if (value.includes("image/bmp")) {
+      return "bmp";
+    }
+    return "png";
+  }
+
+  private isSupportedImageMime(mimeType: string): boolean {
+    return (
+      mimeType === "image/png" ||
+      mimeType === "image/jpeg" ||
+      mimeType === "image/jpg" ||
+      mimeType === "image/webp" ||
+      mimeType === "image/gif" ||
+      mimeType === "image/bmp"
+    );
+  }
+
+  private async ensureAiImageCacheDirectory(): Promise<void> {
+    await fs.promises.mkdir(this.aiImageCacheDir, { recursive: true });
+    if (this.aiImageCacheDirPrepared) {
+      return;
+    }
+    this.aiImageCacheDirPrepared = true;
+    const expireBefore = Date.now() - TEMP_IMAGE_RETENTION_MS;
+    try {
+      const entries = await fs.promises.readdir(this.aiImageCacheDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) {
+          continue;
+        }
+        const fullPath = path.join(this.aiImageCacheDir, entry.name);
+        try {
+          const stat = await fs.promises.stat(fullPath);
+          if (stat.mtimeMs < expireBefore) {
+            await fs.promises.unlink(fullPath);
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      // Ignore cleanup errors.
+    }
+  }
+
+  private async cacheRemoteImagesInMarkdown(markdown: string): Promise<string> {
+    const text = (markdown || "").trim();
+    if (!text) {
+      return markdown;
+    }
+
+    const imageRegex = /!\[((?:\\.|[^\]])*)\]\((?:<([^>]+)>|(https?:\/\/[^\s)]+))\)/g;
+    const replacements = new Map<string, string>();
+    const seenUrls = new Set<string>();
+    await this.ensureAiImageCacheDirectory();
+
+    let match: RegExpExecArray | null = null;
+    while ((match = imageRegex.exec(text)) !== null) {
+      const rawUrl = (match[2] || match[3] || "").trim();
+      if (!rawUrl) {
+        continue;
+      }
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        continue;
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        continue;
+      }
+      if (seenUrls.has(parsed.href)) {
+        continue;
+      }
+      seenUrls.add(parsed.href);
+      try {
+        const response = await fetch(parsed.href, { method: "GET", redirect: "follow" });
+        if (!response.ok) {
+          continue;
+        }
+        const contentType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        if (!this.isSupportedImageMime(contentType)) {
+          continue;
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        if (!arrayBuffer || arrayBuffer.byteLength <= 0) {
+          continue;
+        }
+        const ext = this.getImageExtensionFromContentType(contentType);
+        const hash = createHash("sha1").update(parsed.href).digest("hex").slice(0, 16);
+        const fileName = `${Date.now()}_${hash}.${ext}`;
+        const filePath = path.join(this.aiImageCacheDir, fileName);
+        const buffer = Buffer.from(arrayBuffer);
+        await fs.promises.writeFile(filePath, buffer);
+        const dataUrl = `data:${contentType};base64,${buffer.toString("base64")}`;
+        replacements.set(parsed.href, dataUrl);
+      } catch {
+        continue;
+      }
+    }
+
+    if (!replacements.size) {
+      return markdown;
+    }
+
+    return text.replace(imageRegex, (full, altText, angleWrappedUrl, plainUrl) => {
+      const rawUrl = String(angleWrappedUrl || plainUrl || "").trim();
+      const replacement = replacements.get(rawUrl);
+      if (!replacement) {
+        return full;
+      }
+      return `![${altText || ""}](<${replacement}>)`;
+    });
+  }
+
   private async runSetupFlow(): Promise<{ success: boolean; message: string }> {
     this.postStatus(
       "progress",
@@ -991,7 +1211,7 @@ export class ChatController implements vscode.Disposable {
       this.postStatus(
         "warning",
         "浏览器已在运行",
-        "已有一个 Playwright 浏览器窗口正在使用中。",
+        "已有一个浏览器窗口正在运行。",
         "请先完成当前浏览器中的操作，或关闭后再试。"
       );
       return;
@@ -1000,8 +1220,8 @@ export class ChatController implements vscode.Disposable {
     this.postStatus(
       "progress",
       "正在打开浏览器",
-      "将启动与验证码流程相同的 Playwright 浏览器窗口。",
-      "你可以在浏览器中直接对话，登录状态会自动持久化。"
+      "将启动浏览器窗口，您可以自由浏览和操作。",
+      "关闭浏览器窗口后将自动保存当前账户状态。"
     );
 
     void this.setupRunner.ensureRunning("browser").then((result) => {
@@ -1010,8 +1230,8 @@ export class ChatController implements vscode.Disposable {
         result.success ? "浏览器会话已结束" : "浏览器会话异常结束",
         result.message,
         result.success
-          ? "登录状态已持久化，可继续在插件中提问。"
-          : "可再次点击“浏览器查看”重试，或执行 Run Setup。"
+          ? "认证状态已更新保存，可继续在插件中提问。"
+          : "可再次点击\u201c浏览器查看\u201d重试，或执行 Run Setup。"
       );
       if (!result.success) {
         void vscode.window.showWarningMessage(result.message);
@@ -1044,6 +1264,99 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.postStatus("error", "打开链接失败", message, "请稍后重试，或复制链接到浏览器。");
+    }
+  }
+
+  private buildImageFileBaseName(rawPath: string): string {
+    const fileName = path.basename(rawPath || "").trim();
+    if (!fileName) {
+      return `huge-ai-image-${Date.now()}`;
+    }
+    const clean = fileName
+      .replace(/[\\/:*?"<>|]/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return clean || `huge-ai-image-${Date.now()}`;
+  }
+
+  private async downloadExternalImage(rawHref: string): Promise<void> {
+    const href = rawHref.trim();
+    try {
+      let ext = "png";
+      let baseName = `huge-ai-image-${Date.now()}`;
+      let bytes = new Uint8Array();
+
+      const dataMatch = href.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+      if (dataMatch) {
+        const mime = dataMatch[1].toLowerCase();
+        if (!this.isSupportedImageMime(mime)) {
+          this.postStatus("warning", "下载被拦截", "仅允许下载常见图片格式（png/jpg/webp/gif/bmp）。", undefined);
+          return;
+        }
+        ext = this.getImageExtensionFromContentType(mime);
+        bytes = new Uint8Array(Buffer.from(dataMatch[2], "base64"));
+      } else {
+        let uri: vscode.Uri;
+        try {
+          uri = vscode.Uri.parse(href);
+        } catch {
+          this.postStatus("warning", "图片地址无效", "无法解析该图片链接。", "请检查链接格式后重试。");
+          return;
+        }
+
+        if (uri.scheme !== "http" && uri.scheme !== "https") {
+          this.postStatus("warning", "下载被拦截", "仅允许下载 http/https 或 data:image 链接。", "请使用网页图片链接。");
+          return;
+        }
+
+        this.postStatus("progress", "正在下载图片", uri.toString(), "正在获取图片数据并准备保存。");
+        const response = await fetch(uri.toString(), {
+          method: "GET",
+          redirect: "follow",
+        });
+        if (!response.ok) {
+          throw new Error(`下载失败（HTTP ${response.status}）`);
+        }
+        const contentType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        if (!this.isSupportedImageMime(contentType)) {
+          throw new Error(`不支持的图片类型: ${contentType || "unknown"}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        if (!arrayBuffer || arrayBuffer.byteLength <= 0) {
+          throw new Error("图片内容为空");
+        }
+        bytes = new Uint8Array(arrayBuffer);
+        ext = this.getImageExtensionFromContentType(contentType);
+        baseName = this.buildImageFileBaseName(uri.path);
+      }
+
+      const normalizedBaseName = baseName.includes(".") ? baseName.replace(/\.[^.]+$/, "") : baseName;
+      const suggestedName = `${normalizedBaseName}.${ext}`;
+      const saveUri = await vscode.window.showSaveDialog({
+        saveLabel: "保存图片",
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), "Downloads", suggestedName)),
+        filters: {
+          Images: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
+          All: ["*"],
+        },
+      });
+
+      if (!saveUri) {
+        this.postStatus("idle", "已取消保存", "图片下载已取消。", undefined);
+        return;
+      }
+
+      await vscode.workspace.fs.writeFile(saveUri, bytes);
+      this.postStatus("success", "图片已保存", saveUri.fsPath, "可在本地直接查看或继续编辑。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.postStatus(
+        "error",
+        "图片下载失败",
+        message,
+        "你可以先点击图片链接在浏览器打开，再手动另存为。"
+      );
     }
   }
 

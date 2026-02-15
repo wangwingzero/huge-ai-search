@@ -255,12 +255,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("HUGE");
   context.subscriptions.push(output);
 
-  const config = vscode.workspace.getConfiguration("hugeAiChat");
-  const maxThreads = config.get<number>("maxThreads", 50);
-  const configuredLanguage = config.get<string>("defaultLanguage", "zh-CN");
-  const defaultLanguage: SearchLanguage = isSearchLanguage(configuredLanguage)
-    ? configuredLanguage
-    : "zh-CN";
+  const maxThreads = 50;
+  const defaultLanguage: SearchLanguage = "en-US";
 
   const store = new ThreadStore(context, maxThreads, defaultLanguage);
   const mcpManager = new McpClientManager(context, output);

@@ -9,10 +9,20 @@ export type SearchLanguage =
 export type ChatRole = "user" | "assistant";
 export type ChatMessageStatus = "pending" | "done" | "error";
 
+export interface ChatAttachment {
+  id: string;
+  thumbDataUrl: string;
+  originalDataUrl?: string;
+  width?: number;
+  height?: number;
+  name?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  attachments?: ChatAttachment[];
   createdAt: number;
   status: ChatMessageStatus;
 }
@@ -80,9 +90,11 @@ export type PanelToHostMessage =
       language?: SearchLanguage;
       imageDataUrl?: string;
       imageCount?: number;
+      attachments?: ChatAttachment[];
     }
   | { type: "chat/retryLast"; threadId: string }
   | { type: "link/open"; href: string }
+  | { type: "image/download"; href: string }
   | { type: "auth/runSetup" };
 
 export type HostToPanelMessage =

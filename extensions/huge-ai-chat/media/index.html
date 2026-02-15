@@ -104,6 +104,19 @@
 
         <div id="messages" class="messages"></div>
 
+        <div id="imagePreview" class="image-preview hidden" role="dialog" aria-modal="true" aria-label="图片预览">
+          <div id="imagePreviewBackdrop" class="image-preview-backdrop"></div>
+          <div class="image-preview-panel">
+            <div class="image-preview-toolbar">
+              <button id="imageDownloadBtn" type="button" class="mini-btn">下载图片</button>
+              <button id="imagePreviewCloseBtn" type="button" class="mini-btn">关闭</button>
+            </div>
+            <div class="image-preview-content">
+              <img id="imagePreviewImg" src="" alt="preview" />
+            </div>
+          </div>
+        </div>
+
         <div class="composer">
           <div id="attachmentBar" class="attachment-bar hidden">
             <div class="attachment-head">
@@ -112,9 +125,28 @@
             </div>
             <div id="attachmentList" class="attachment-list"></div>
           </div>
-          <div class="composer-row">
-            <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
-            <button id="sendBtn" class="btn primary">Send</button>
+          <div id="slashMenu" class="slash-menu hidden" role="listbox" aria-label="斜杠命令">
+          </div>
+          <div class="composer-box">
+            <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行（输入 / 查看命令）"></textarea>
+            <div class="composer-toolbar">
+              <div class="composer-toolbar-left">
+                <button id="attachImageBtn" class="composer-tool-btn" type="button" aria-label="添加图片" title="添加图片">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M14.5 2.5h-13A.5.5 0 0 0 1 3v10a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5V3a.5.5 0 0 0-.5-.5zM2 12.5v-1.88l2.72-2.72a.25.25 0 0 1 .35 0L7.78 10.6l-1.13 1.13a.75.75 0 0 0 1.06 1.06l3.57-3.57a.25.25 0 0 1 .35 0L14 11.59V12.5H2zm12-3.83-1.97-1.97a1.75 1.75 0 0 0-2.47 0L7.78 8.47 5.42 6.1a1.75 1.75 0 0 0-2.47 0L2 7.05V4h12v4.67zM5.5 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>
+                </button>
+                <button id="drawImageBtn" class="composer-tool-btn" type="button" aria-label="画图" title="画图模式">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.7 1.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-.4.2l-3.5 1a.5.5 0 0 1-.6-.6l1-3.5a1 1 0 0 1 .2-.4l8-8zM12.4 2L11 3.4 12.6 5l1.4-1.4L12.4 2zM11.5 6.1L9.9 4.5l-6.5 6.5-.7 2.3 2.3-.7 6.5-6.5z"/></svg>
+                </button>
+                <button id="slashCmdBtn" class="composer-tool-btn" type="button" aria-label="命令菜单" title="命令菜单">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.56 14L10.44 2h1l-4.88 12h-1z"/></svg>
+                </button>
+              </div>
+              <div class="composer-toolbar-right">
+                <button id="sendBtn" class="composer-send-btn" type="button" aria-label="发送" title="发送" disabled>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.989 14.666L15.67 8.353a.4.4 0 0 0 0-.706L.989 1.334a.4.4 0 0 0-.566.442L1.97 7.5H8.5a.5.5 0 0 1 0 1H1.97L.423 14.224a.4.4 0 0 0 .566.442z"/></svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </section>

@@ -730,7 +730,7 @@ server.tool(
     query: z.string().describe("搜索问题（使用自然语言提问）"),
     language: z
       .enum(["zh-CN", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR"])
-      .default("zh-CN")
+      .default("en-US")
       .describe("搜索结果语言"),
     follow_up: z
       .boolean()
@@ -744,20 +744,26 @@ server.tool(
       .string()
       .optional()
       .describe("可选。要上传到 HUGE AI 的本地图片绝对路径（当前单图输入）"),
+    create_image: z
+      .boolean()
+      .default(false)
+      .describe("可选。设为 true 时进入画图模式，使用 Google AI Mode 的 Create images 功能生成图片"),
   },
   async (args) => {
-    const { query, language, follow_up, session_id, image_path } = args;
+    const { query, language, follow_up, session_id, image_path, create_image } = args;
     const requestStartMs = Date.now();
     const normalizedQuery = query.trim();
     // 确保 image_path 是字符串类型，否则使用 undefined
     const normalizedImagePath = typeof image_path === "string" ? image_path.trim() : undefined;
-    const requestFollowUp = follow_up && !normalizedImagePath;
     const hasImageInput = Boolean(normalizedImagePath);
+    const requestFollowUp = follow_up && !create_image;
+    const requestFollowUpWithImage = requestFollowUp && hasImageInput;
+    const requestCreateImage = create_image && !normalizedImagePath;
     const guardedQuery =
-      !requestFollowUp && !hasImageInput ? applyQueryGuardrails(normalizedQuery) : normalizedQuery;
+      !requestFollowUp && !hasImageInput && !requestCreateImage ? applyQueryGuardrails(normalizedQuery) : normalizedQuery;
 
     log("INFO",
-      `收到工具调用: query='${normalizedQuery}', language=${language}, follow_up=${requestFollowUp}, session_id=${session_id || '(新会话)'}, image=${normalizedImagePath ? "yes" : "no"}`
+      `收到工具调用: query='${normalizedQuery}', language=${language}, follow_up=${requestFollowUp}, session_id=${session_id || '(新会话)'}, image=${normalizedImagePath ? "yes" : "no"}, create_image=${requestCreateImage}`
     );
 
     if (!normalizedQuery && !normalizedImagePath) {
@@ -863,11 +869,14 @@ server.tool(
       );
 
       // 获取或创建会话
-      const preferredSessionId = requestFollowUp
+      // 当客户端显式传入 session_id 时（包括 create_image 场景），优先使用它
+      const preferredSessionId = session_id && sessions.has(session_id)
         ? session_id
-        : defaultSessionId && sessions.has(defaultSessionId)
-          ? defaultSessionId
-          : undefined;
+        : requestFollowUp
+          ? session_id
+          : defaultSessionId && sessions.has(defaultSessionId)
+            ? defaultSessionId
+            : undefined;
       const { sessionId: allocatedSessionId, session } = await getOrCreateSession(preferredSessionId);
       activeSessionId = allocatedSessionId;
       if (!requestFollowUp) {
@@ -913,15 +922,23 @@ server.tool(
 
       let searchPromise: Promise<SearchResult>;
 
-      if (requestFollowUp && searcherInstance.hasActiveSession()) {
+      if (requestCreateImage && session_id && searcherInstance.hasActiveSession()) {
+        // 同一线程内的画图请求（客户端显式传入 session_id）：通过追问方式保持会话连续性
+        console.error(`使用追问画图模式（会话: ${allocatedSessionId}）`);
+        searchPromise = searcherInstance.continueConversation(normalizedQuery);
+      } else if (requestCreateImage) {
+        console.error(`使用画图模式（会话: ${allocatedSessionId}）`);
+        searchPromise = searcherInstance.searchWithImageCreation(normalizedQuery, language);
+      } else if (requestFollowUpWithImage && searcherInstance.hasActiveSession()) {
+        // 追问 + 图片：在当前会话页面上传图片并提交追问
+        console.error(`使用追问+图片模式（会话: ${allocatedSessionId}）`);
+        searchPromise = searcherInstance.continueConversationWithImage(normalizedQuery, normalizedImagePath!);
+      } else if (requestFollowUp && !hasImageInput && searcherInstance.hasActiveSession()) {
         console.error(`使用追问模式（会话: ${allocatedSessionId}）`);
         searchPromise = searcherInstance.continueConversation(normalizedQuery);
       } else {
         if (requestFollowUp && !searcherInstance.hasActiveSession()) {
           console.error("请求追问但没有活跃会话，使用新搜索");
-        }
-        if (follow_up && normalizedImagePath) {
-          console.error("检测到图片输入，追问模式已自动切换为新搜索");
         }
         if (guardedQuery !== normalizedQuery) {
           console.error("已对技术词条查询注入防幻觉提示词");

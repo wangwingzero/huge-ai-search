@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 export interface SetupRunResult {
@@ -54,51 +56,73 @@ function getSanitizedEnv(extra?: Record<string, string>): Record<string, string>
   return env;
 }
 
-function getSetupCommand(): CommandSpec {
+function getSetupCommand(mode: SetupRunMode, serverDir?: string | null): CommandSpec {
+  const browseArg = mode === "browser" ? ["--browse"] : [];
+
+  // 优先使用本地 setup.js（确保 --browse 等新功能可用）
+  if (serverDir) {
+    const localSetup = path.join(serverDir, "setup.js");
+    if (fs.existsSync(localSetup)) {
+      return {
+        command: "node",
+        args: [localSetup, ...browseArg],
+      };
+    }
+  }
+
   if (process.platform === "win32") {
     return {
       command: "cmd",
-      args: ["/c", "npx", "-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup"],
+      args: ["/c", "npx", "-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup", ...browseArg],
     };
   }
   return {
     command: "npx",
-    args: ["-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup"],
+    args: ["-y", "-p", "huge-ai-search@latest", "huge-ai-search-setup", ...browseArg],
   };
 }
 
 function getStartMessage(mode: SetupRunMode): string {
   if (mode === "browser") {
-    return "开始启动浏览器查看流程...";
+    return "开始启动浏览器自由浏览模式...";
   }
   return "开始执行登录验证流程...";
 }
 
 function getSuccessMessage(mode: SetupRunMode): string {
   if (mode === "browser") {
-    return "浏览器会话已结束，认证状态已保存。";
+    return "浏览器已关闭，认证状态已更新保存。";
   }
-  return "验证流程已完成。请点击“重试”继续搜索。";
+  return "验证流程已完成。请点击\u201c重试\u201d继续搜索。";
 }
 
 function getLaunchErrorMessage(mode: SetupRunMode, reason: string): string {
   if (mode === "browser") {
-    return `浏览器查看流程启动失败: ${reason}`;
+    return `浏览器启动失败: ${reason}`;
   }
   return `登录验证流程启动失败: ${reason}`;
 }
 
 function getExitErrorMessage(mode: SetupRunMode, exitCode: number | null): string {
   if (mode === "browser") {
-    return `浏览器查看流程失败，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
+    return `浏览器会话异常结束，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
   }
   return `验证流程失败，退出码: ${exitCode ?? "unknown"}。请检查输出日志后重试。`;
 }
 
 export class SetupRunner {
   private running: Promise<SetupRunResult> | null = null;
+  private serverDirResolver: (() => string | null) | null = null;
 
   constructor(private readonly output: vscode.OutputChannel) {}
+
+  /**
+   * 设置服务器目录解析器，用于定位本地 setup.js。
+   * 在 MCP 服务器连接后调用，传入返回 dist 目录路径的函数。
+   */
+  setServerDirResolver(resolver: () => string | null): void {
+    this.serverDirResolver = resolver;
+  }
 
   isRunning(): boolean {
     return this.running !== null;
@@ -119,7 +143,8 @@ export class SetupRunner {
 
   private runInternal(mode: SetupRunMode): Promise<SetupRunResult> {
     return new Promise<SetupRunResult>((resolve) => {
-      const spec = getSetupCommand();
+      const serverDir = this.serverDirResolver?.() ?? null;
+      const spec = getSetupCommand(mode, serverDir);
       const launchContext = resolveSetupLaunchContext();
       const cwd = launchContext.cwd;
       this.output.show(true);

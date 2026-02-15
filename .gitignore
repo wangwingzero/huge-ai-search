@@ -37,6 +37,11 @@ edge_browser_data/
 edge_browser_temp/
 chrome_browser_temp/
 
+# Claude Code
+.claude/
+.mcp.json
+D:huge-ai-search.claudeagents/
+
 # IDE
 .idea/
 .vscode/*
@@ -61,6 +66,7 @@ image/
 
 # Private files
 个人/
+本地测试版本/
 docs/
 
 # VS Code extension build artifacts
@@ -73,3 +79,6 @@ tmp*
 error.txt
 output.txt
 nul
+
+# Debug/test screenshots (root level only)
+/*.png

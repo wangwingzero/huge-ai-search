@@ -15,6 +15,7 @@ export interface SearchToolArgs {
   follow_up: boolean;
   session_id?: string;
   image_path?: string;
+  create_image?: boolean;
 }
 
 export interface McpWarmupResult {
@@ -39,20 +40,6 @@ const DEFAULT_MCP_ENV: Record<string, string> = {
   NPM_CONFIG_AUDIT: "false",
   NPM_CONFIG_LOGLEVEL: "error",
 };
-
-function normalizeWindowsCommandName(command: string): string {
-  return path.basename(command).toLowerCase();
-}
-
-function isWindowsNpxCommand(command: string): boolean {
-  const normalized = normalizeWindowsCommandName(command);
-  return normalized === "npx" || normalized === "npx.cmd";
-}
-
-function isWindowsHugeSearchCommand(command: string): boolean {
-  const normalized = normalizeWindowsCommandName(command);
-  return normalized === "huge-ai-search" || normalized === "huge-ai-search.cmd";
-}
 
 function getSanitizedEnv(extraEnv?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
@@ -94,6 +81,19 @@ export class McpClientManager {
 
   isConnected(): boolean {
     return Boolean(this.client && this.transport);
+  }
+
+  /**
+   * 获取已解析的 MCP 服务器目录（dist 目录），用于定位 setup.js 等工具脚本。
+   * 仅当使用 node 直接运行本地 index.js 时可用。
+   */
+  getServerDir(): string | null {
+    const resolved = this.lastResolvedCommand;
+    if (!resolved) return null;
+    // 命令格式: node /path/to/dist/index.js
+    const entry = resolved.args?.[resolved.args.length - 1];
+    if (!entry || !entry.endsWith("index.js")) return null;
+    return path.dirname(entry);
   }
 
   async callSearch(args: SearchToolArgs): Promise<string> {
@@ -147,7 +147,7 @@ export class McpClientManager {
         ready: false,
         detail: this.toUserFacingError(error).message,
         suggestion:
-          "可继续打开聊天界面；发送消息时会再次尝试连接。若持续失败，请检查 Node/npm、网络代理，或在设置中覆盖 hugeAiChat.mcp.command。",
+          "可继续打开聊天界面；发送消息时会再次尝试连接。若持续失败，请检查 Node/npm 和网络代理。",
       };
     }
   }
@@ -263,8 +263,11 @@ export class McpClientManager {
   }
 
   private async connectWithCommand(resolved: ResolvedServerCommand): Promise<void> {
-    const settings = vscode.workspace.getConfiguration("hugeAiChat");
-    const extraEnv = settings.get<Record<string, string>>("mcp.env") || {};
+    const extraEnv: Record<string, string> = {
+      HUGE_AI_SEARCH_IMAGE_DRIVER: "playwright",
+      HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS: "35000",
+      HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER: "1.0",
+    };
     const serverParams: StdioServerParameters = {
       command: resolved.command,
       args: resolved.args,
@@ -383,25 +386,6 @@ export class McpClientManager {
   }
 
   private resolveServerCommands(): ResolvedServerCommand[] {
-    const config = vscode.workspace.getConfiguration("hugeAiChat");
-    const configuredCommand = (config.get<string>("mcp.command") || "").trim();
-    const configuredArgs = (config.get<string[]>("mcp.args") || []).filter(
-      (item) => typeof item === "string" && item.trim().length > 0
-    );
-    const configuredCwd = (config.get<string>("mcp.cwd") || "").trim();
-
-    if (configuredCommand) {
-      const configuredResolved = this.normalizeConfiguredCommand({
-        command: configuredCommand,
-        args: configuredArgs,
-        cwd: configuredCwd || undefined,
-        source: "configured",
-      });
-      return [
-        configuredResolved,
-      ];
-    }
-
     const commands: ResolvedServerCommand[] = [];
     const localEntry = this.findLocalServerEntry();
     if (localEntry) {
@@ -416,7 +400,7 @@ export class McpClientManager {
       });
     }
 
-    commands.push(this.resolveNpxCommand(configuredCwd || undefined));
+    commands.push(this.resolveNpxCommand());
     return commands;
   }
 
@@ -436,32 +420,6 @@ export class McpClientManager {
       cwd,
       source: "cmd-auto",
     };
-  }
-
-  private normalizeConfiguredCommand(
-    resolved: ResolvedServerCommand
-  ): ResolvedServerCommand {
-    if (process.platform !== "win32") {
-      return resolved;
-    }
-
-    if (normalizeWindowsCommandName(resolved.command) === "cmd") {
-      return resolved;
-    }
-
-    if (isWindowsNpxCommand(resolved.command) || isWindowsHugeSearchCommand(resolved.command)) {
-      const normalized: ResolvedServerCommand = {
-        ...resolved,
-        command: "cmd",
-        args: ["/c", resolved.command, ...resolved.args],
-      };
-      this.log(
-        `[MCP] Windows 兼容模式：自动将配置命令 "${resolved.command}" 包装为 "cmd /c ..."`
-      );
-      return normalized;
-    }
-
-    return resolved;
   }
 
   private findLocalServerEntry(): string | null {
@@ -550,7 +508,7 @@ export class McpClientManager {
     ) {
       return new Error(
         `无法启动搜索服务（命令不可用）：${commandText}\n` +
-          "请确认本机可用 Node.js/npm（含 npx），或在设置里指定 hugeAiChat.mcp.command。"
+          "请确认本机可用 Node.js/npm（含 npx）。"
       );
     }
 
@@ -566,13 +524,13 @@ export class McpClientManager {
     ) {
       return new Error(
         `搜索服务连接失败（阶段: ${phase}）。\n` +
-          "插件已自动执行重连与重试；若仍失败，请检查网络/代理，或在设置中指定 hugeAiChat.mcp.command。"
+          "插件已自动执行重连与重试；若仍失败，请检查网络/代理。"
       );
     }
 
     return new Error(
       `搜索服务不可用：${raw}\n` +
-        "若持续失败，请在设置中配置 hugeAiChat.mcp.command / hugeAiChat.mcp.args 指向可用服务。"
+        "若持续失败，请检查 Node.js/npm 环境及网络代理设置。"
     );
   }
 

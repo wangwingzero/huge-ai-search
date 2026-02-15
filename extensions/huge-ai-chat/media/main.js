@@ -1,7 +1,13 @@
 (function () {
   const vscode = acquireVsCodeApi();
-  const DEFAULT_INPUT_PLACEHOLDER = "输入问题，Enter 发送，Shift+Enter 换行";
+  const DEFAULT_INPUT_PLACEHOLDER = "输入问题，Enter 发送，Shift+Enter 换行（输入 / 查看命令）";
+  const SLASH_COMMANDS = [
+    { cmd: "/draw", alias: [], desc: "画图模式 — 使用 Google AI 生成图片", placeholder: "输入图片描述，例如：一只可爱的小狗在草地上奔跑" },
+  ];
   const MAX_ATTACHMENTS = 12;
+  const ATTACHMENT_THUMB_MAX_EDGE = 320;
+  const ATTACHMENT_THUMB_QUALITY = 0.82;
+  const ATTACHMENT_PERSIST_ORIGINAL_MAX_BYTES = 3 * 1024 * 1024;
   const MERGED_IMAGE_MAX_WIDTH = 1800;
   const MERGED_IMAGE_MAX_TOTAL_HEIGHT = 9000;
   const MERGED_IMAGE_PADDING = 12;
@@ -72,8 +78,13 @@
       suggestion: "输入问题后按 Enter 发送。",
       at: Date.now(),
     },
+    previewImageUrl: "",
     threadStatus: {},
     attachments: [],
+    slashMenuVisible: false,
+    slashMenuItems: [],
+    slashMenuActiveIndex: 0,
+    slashActiveCommand: null,
   };
 
   const dom = {
@@ -94,6 +105,9 @@
     messages: document.getElementById("messages"),
     input: document.getElementById("input"),
     sendBtn: document.getElementById("sendBtn"),
+    attachImageBtn: document.getElementById("attachImageBtn"),
+    drawImageBtn: document.getElementById("drawImageBtn"),
+    slashCmdBtn: document.getElementById("slashCmdBtn"),
     authBanner: document.getElementById("authBanner"),
     authText: document.getElementById("authText"),
     statusBar: document.getElementById("statusBar"),
@@ -102,10 +116,16 @@
     statusTime: document.getElementById("statusTime"),
     statusDetail: document.getElementById("statusDetail"),
     statusSuggestion: document.getElementById("statusSuggestion"),
+    imagePreview: document.getElementById("imagePreview"),
+    imagePreviewBackdrop: document.getElementById("imagePreviewBackdrop"),
+    imagePreviewImg: document.getElementById("imagePreviewImg"),
+    imagePreviewCloseBtn: document.getElementById("imagePreviewCloseBtn"),
+    imageDownloadBtn: document.getElementById("imageDownloadBtn"),
     attachmentBar: document.getElementById("attachmentBar"),
     attachmentSummary: document.getElementById("attachmentSummary"),
     attachmentList: document.getElementById("attachmentList"),
     clearAttachmentsBtn: document.getElementById("clearAttachmentsBtn"),
+    slashMenu: document.getElementById("slashMenu"),
   };
 
   function post(message) {
@@ -360,6 +380,78 @@
     });
   }
 
+  function estimateDataUrlBytes(dataUrl) {
+    const value = String(dataUrl || "");
+    const commaIndex = value.indexOf(",");
+    if (commaIndex < 0) {
+      return 0;
+    }
+    const base64 = value.slice(commaIndex + 1);
+    if (!base64) {
+      return 0;
+    }
+    const padding = (base64.match(/=+$/) || [""])[0].length;
+    return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+  }
+
+  async function buildThumbnailDataUrl(dataUrl) {
+    const image = await loadImageFromDataUrl(dataUrl);
+    const naturalWidth = image.naturalWidth || 1;
+    const naturalHeight = image.naturalHeight || 1;
+    const longEdge = Math.max(naturalWidth, naturalHeight);
+    const scale = longEdge > ATTACHMENT_THUMB_MAX_EDGE
+      ? ATTACHMENT_THUMB_MAX_EDGE / longEdge
+      : 1;
+
+    const targetWidth = Math.max(1, Math.round(naturalWidth * scale));
+    const targetHeight = Math.max(1, Math.round(naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("无法创建缩略图");
+    }
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    let thumbDataUrl = canvas.toDataURL("image/webp", ATTACHMENT_THUMB_QUALITY);
+    if (!thumbDataUrl.startsWith("data:image/")) {
+      thumbDataUrl = canvas.toDataURL("image/jpeg", ATTACHMENT_THUMB_QUALITY);
+    }
+
+    return {
+      thumbDataUrl,
+      width: naturalWidth,
+      height: naturalHeight,
+    };
+  }
+
+  function normalizeAttachmentPayload() {
+    const list = Array.isArray(runtime.attachments) ? runtime.attachments : [];
+    if (!list.length) {
+      return undefined;
+    }
+    const payload = list
+      .slice(0, MAX_ATTACHMENTS)
+      .map((attachment) => {
+        const thumbDataUrl = sanitizeImageUrl(attachment.thumbDataUrl || attachment.dataUrl);
+        const originalDataUrl = sanitizeImageUrl(attachment.originalDataUrl || "");
+        if (!thumbDataUrl) {
+          return null;
+        }
+        return {
+          id: String(attachment.id || createAttachmentId()),
+          thumbDataUrl,
+          originalDataUrl: originalDataUrl || undefined,
+          width: Number.isFinite(attachment.width) ? attachment.width : undefined,
+          height: Number.isFinite(attachment.height) ? attachment.height : undefined,
+          name: typeof attachment.name === "string" ? attachment.name : undefined,
+        };
+      })
+      .filter((item) => Boolean(item));
+    return payload.length ? payload : undefined;
+  }
+
   function clearAttachments() {
     runtime.attachments = [];
     renderAttachments();
@@ -394,7 +486,7 @@
       item.dataset.attachmentId = attachment.id;
 
       const image = document.createElement("img");
-      image.src = attachment.dataUrl;
+      image.src = attachment.thumbDataUrl || attachment.dataUrl;
       image.alt = "attachment";
       item.appendChild(image);
 
@@ -436,12 +528,18 @@
     for (const file of acceptedFiles) {
       try {
         const dataUrl = await fileToDataUrl(file);
-        const image = await loadImageFromDataUrl(dataUrl);
+        const thumbnail = await buildThumbnailDataUrl(dataUrl);
+        const originalDataUrl =
+          estimateDataUrlBytes(dataUrl) <= ATTACHMENT_PERSIST_ORIGINAL_MAX_BYTES
+            ? dataUrl
+            : undefined;
         runtime.attachments.push({
           id: createAttachmentId(),
           dataUrl,
-          width: image.naturalWidth || 0,
-          height: image.naturalHeight || 0,
+          thumbDataUrl: thumbnail.thumbDataUrl,
+          originalDataUrl,
+          width: thumbnail.width || 0,
+          height: thumbnail.height || 0,
           name: file.name || "pasted-image.png",
         });
         added += 1;
@@ -465,7 +563,12 @@
 
     const decodedImages = [];
     for (const attachment of attachments) {
-      const image = await loadImageFromDataUrl(attachment.dataUrl);
+      const sourceDataUrl =
+        attachment.dataUrl || attachment.originalDataUrl || attachment.thumbDataUrl;
+      if (!sourceDataUrl) {
+        continue;
+      }
+      const image = await loadImageFromDataUrl(sourceDataUrl);
       decodedImages.push(image);
     }
     if (!decodedImages.length) {
@@ -543,7 +646,15 @@
         normalizeAssistantMarkdownForExport(message.content || "")
       ).trim();
     }
-    return (message.content || "").trim();
+    const content = (message.content || "").trim();
+    const imageCount = Array.isArray(message.attachments) ? message.attachments.length : 0;
+    if (imageCount > 0) {
+      if (content) {
+        return `${content}\n\n[附图 ${imageCount} 张]`;
+      }
+      return `[附图 ${imageCount} 张]`;
+    }
+    return content;
   }
 
   function buildThreadMarkdown(thread) {
@@ -740,6 +851,58 @@
     } catch {
       return null;
     }
+  }
+
+  function sanitizeImageUrl(rawUrl) {
+    const value = String(rawUrl || "").trim();
+    if (!value) {
+      return null;
+    }
+    if (/^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(value)) {
+      return value;
+    }
+    return sanitizeHttpUrl(value);
+  }
+
+  function openImagePreview(rawUrl, altText) {
+    const safeUrl = sanitizeImageUrl(rawUrl);
+    if (!safeUrl || !dom.imagePreview || !dom.imagePreviewImg || !dom.imageDownloadBtn) {
+      return;
+    }
+    runtime.previewImageUrl = safeUrl;
+    dom.imagePreviewImg.src = safeUrl;
+    dom.imagePreviewImg.alt = altText || "preview";
+    dom.imageDownloadBtn.dataset.imageUrl = safeUrl;
+    dom.imagePreview.classList.remove("hidden");
+  }
+
+  function closeImagePreview() {
+    if (!dom.imagePreview || !dom.imagePreviewImg || !dom.imageDownloadBtn) {
+      return;
+    }
+    dom.imagePreview.classList.add("hidden");
+    dom.imagePreviewImg.src = "";
+    dom.imageDownloadBtn.dataset.imageUrl = "";
+    runtime.previewImageUrl = "";
+  }
+
+  function requestImageDownload(rawUrl) {
+    const safeUrl = sanitizeImageUrl(rawUrl);
+    if (!safeUrl) {
+      return;
+    }
+    post({
+      type: "image/download",
+      href: safeUrl,
+    });
+    setStatus({
+      kind: "progress",
+      title: "正在下载图片",
+      detail: safeUrl,
+      suggestion: "稍后会弹出保存路径并写入本地文件。",
+      threadId: state.activeThreadId || undefined,
+      at: Date.now(),
+    });
   }
 
   function normalizeLanguageName(raw) {
@@ -992,6 +1155,7 @@
     let text = normalizeBrokenMathTokenLines(autoFenceLooseCodeBlocks(raw));
     const debugBlocks = [];
     const codeBlocks = [];
+    const imageBlocks = [];
     const debugRegex = new RegExp(
       `${DEBUG_BLOCK_START}\\n([A-Za-z0-9+/=]+)\\n${DEBUG_BLOCK_END}`,
       "g"
@@ -1013,6 +1177,24 @@
       return token;
     });
 
+    text = text.replace(
+      /!\[((?:\\.|[^\]])*)\]\((?:<([^>]+)>|((?:https?:\/\/|data:image\/)[^\s)]+))\)/g,
+      (_, rawAlt, angleWrappedUrl, plainUrl) => {
+        const url = angleWrappedUrl || plainUrl || "";
+        const safeUrl = sanitizeImageUrl(url);
+        const alt = String(rawAlt || "").replace(/\\([\[\]\\])/g, "$1");
+        if (!safeUrl) {
+          return alt;
+        }
+        const token = `__IMAGE_BLOCK_${imageBlocks.length}__`;
+        imageBlocks.push({
+          alt,
+          url: safeUrl,
+        });
+        return token;
+      }
+    );
+
     text = escapeHtml(text);
     text = text.replace(/^### (.*)$/gm, "<h3>$1</h3>");
     text = text.replace(/^## (.*)$/gm, "<h2>$1</h2>");
@@ -1020,9 +1202,10 @@
     text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
     text = text.replace(
-      /\[((?:\\.|[^\]])+)\]\((?:&lt;([^&]+)&gt;|<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
+      /\[((?:\\.|[^\]])+)\]\((?:&lt;((?:(?!&gt;).)+)&gt;|<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
       (_, rawLabel, escapedAngleWrappedUrl, angleWrappedUrl, plainUrl) => {
-        const url = escapedAngleWrappedUrl || angleWrappedUrl || plainUrl || "";
+        const rawUrl = escapedAngleWrappedUrl || angleWrappedUrl || plainUrl || "";
+        const url = rawUrl.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
         const safeUrl = sanitizeHttpUrl(url);
         const label = String(rawLabel || "").replace(/\\([\[\]\\])/g, "$1");
         if (!safeUrl) {
@@ -1039,6 +1222,7 @@
 
     text = text.replace(/<p>__CODE_BLOCK_(\d+)__<\/p>/g, "__CODE_BLOCK_$1__");
     text = text.replace(/<p>__DEBUG_BLOCK_(\d+)__<\/p>/g, "__DEBUG_BLOCK_$1__");
+    text = text.replace(/<p>__IMAGE_BLOCK_(\d+)__<\/p>/g, "__IMAGE_BLOCK_$1__");
 
     text = text.replace(/__CODE_BLOCK_(\d+)__/g, (_, index) => {
       const block = codeBlocks[Number(index)];
@@ -1065,6 +1249,20 @@
     text = text.replace(/__DEBUG_BLOCK_(\d+)__/g, () => {
       // 用户要求：调试信息不在 UI 展示。
       return "";
+    });
+
+    text = text.replace(/__IMAGE_BLOCK_(\d+)__/g, (_, index) => {
+      const block = imageBlocks[Number(index)];
+      if (!block) {
+        return "";
+      }
+      const safeUrl = escapeHtml(block.url);
+      const safeAlt = escapeHtml(block.alt || "generated image");
+      return [
+        `<figure class="message-image-block">`,
+        `  <img class="message-inline-image" src="${safeUrl}" alt="${safeAlt}" loading="lazy" referrerpolicy="no-referrer" data-image-url="${safeUrl}">`,
+        `</figure>`,
+      ].join("");
     });
 
     return text;
@@ -1229,7 +1427,43 @@
       if (message.role === "assistant") {
         body.innerHTML = renderMarkdown(message.content);
       } else {
-        body.textContent = message.content;
+        const userText = String(message.content || "");
+        if (userText.trim().length > 0) {
+          const textNode = document.createElement("p");
+          textNode.className = "user-message-text";
+          textNode.textContent = userText;
+          body.appendChild(textNode);
+        }
+        const messageAttachments = Array.isArray(message.attachments) ? message.attachments : [];
+        if (messageAttachments.length > 0) {
+          const gallery = document.createElement("div");
+          gallery.className = "message-attachment-gallery";
+
+          for (const attachment of messageAttachments) {
+            const thumbUrl = sanitizeImageUrl(attachment.thumbDataUrl || "");
+            if (!thumbUrl) {
+              continue;
+            }
+            const fullUrl = sanitizeImageUrl(attachment.originalDataUrl || "") || thumbUrl;
+
+            const figure = document.createElement("figure");
+            figure.className = "message-image-block";
+
+            const image = document.createElement("img");
+            image.className = "message-inline-image";
+            image.src = thumbUrl;
+            image.alt = attachment.name || "attachment";
+            image.loading = "lazy";
+            image.referrerPolicy = "no-referrer";
+            image.dataset.imageUrl = fullUrl;
+            figure.appendChild(image);
+            gallery.appendChild(figure);
+          }
+
+          if (gallery.childElementCount > 0) {
+            body.appendChild(gallery);
+          }
+        }
       }
       wrapper.appendChild(body);
       dom.messages.appendChild(wrapper);
@@ -1242,6 +1476,140 @@
       dom.messages.scrollTop = savedScrollTop;
     }
     renderComposerState();
+  }
+
+  function getAllSlashTriggers() {
+    const triggers = [];
+    for (const command of SLASH_COMMANDS) {
+      triggers.push({ trigger: command.cmd, command });
+      for (const alias of command.alias || []) {
+        triggers.push({ trigger: alias, command });
+      }
+    }
+    return triggers;
+  }
+
+  function matchSlashCommands(input) {
+    const text = input.toLowerCase();
+    if (!text.startsWith("/")) {
+      return [];
+    }
+    const allTriggers = getAllSlashTriggers();
+    if (text === "/") {
+      return allTriggers;
+    }
+    return allTriggers.filter((item) => item.trigger.toLowerCase().startsWith(text));
+  }
+
+  function renderSlashMenu() {
+    if (!dom.slashMenu) {
+      return;
+    }
+    if (!runtime.slashMenuVisible || runtime.slashMenuItems.length === 0) {
+      dom.slashMenu.classList.add("hidden");
+      dom.slashMenu.innerHTML = "";
+      return;
+    }
+    dom.slashMenu.classList.remove("hidden");
+    dom.slashMenu.innerHTML = "";
+    for (let i = 0; i < runtime.slashMenuItems.length; i++) {
+      const item = runtime.slashMenuItems[i];
+      const el = document.createElement("div");
+      el.className = `slash-menu-item${i === runtime.slashMenuActiveIndex ? " active" : ""}`;
+      el.setAttribute("role", "option");
+      el.dataset.index = String(i);
+
+      const cmdSpan = document.createElement("span");
+      cmdSpan.className = "slash-menu-item-cmd";
+      cmdSpan.textContent = item.trigger;
+      el.appendChild(cmdSpan);
+
+      const descSpan = document.createElement("span");
+      descSpan.className = "slash-menu-item-desc";
+      descSpan.textContent = item.command.desc;
+      el.appendChild(descSpan);
+
+      el.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+      });
+      el.addEventListener("mouseenter", () => {
+        if (runtime.slashMenuActiveIndex === i) {
+          return;
+        }
+        runtime.slashMenuActiveIndex = i;
+        const allItems = dom.slashMenu.querySelectorAll(".slash-menu-item");
+        for (let k = 0; k < allItems.length; k++) {
+          allItems[k].classList.toggle("active", k === i);
+        }
+      });
+      el.addEventListener("click", () => {
+        selectSlashCommand(i);
+      });
+
+      dom.slashMenu.appendChild(el);
+    }
+  }
+
+  function showSlashMenu(items) {
+    runtime.slashMenuItems = items;
+    runtime.slashMenuVisible = true;
+    runtime.slashMenuActiveIndex = 0;
+    renderSlashMenu();
+  }
+
+  function hideSlashMenu() {
+    runtime.slashMenuVisible = false;
+    runtime.slashMenuItems = [];
+    runtime.slashMenuActiveIndex = 0;
+    renderSlashMenu();
+  }
+
+  function selectSlashCommand(index) {
+    const item = runtime.slashMenuItems[index];
+    if (!item) {
+      hideSlashMenu();
+      return;
+    }
+    dom.input.value = item.trigger + " ";
+    runtime.slashActiveCommand = item.command;
+    dom.input.placeholder = item.command.placeholder || DEFAULT_INPUT_PLACEHOLDER;
+    hideSlashMenu();
+    dom.input.focus();
+    saveDraft();
+    renderComposerState();
+  }
+
+  function updateSlashState() {
+    const value = dom.input.value;
+    const trimmed = value.trimStart();
+    // Check if user cleared the command prefix
+    if (runtime.slashActiveCommand) {
+      const allTriggers = getAllSlashTriggers().filter((t) => t.command === runtime.slashActiveCommand);
+      const stillHasPrefix = allTriggers.some((t) => trimmed.toLowerCase().startsWith(t.trigger.toLowerCase()));
+      if (!stillHasPrefix) {
+        runtime.slashActiveCommand = null;
+      }
+    }
+    // Check for new command prefix match (after typing full command + space)
+    if (!runtime.slashActiveCommand) {
+      const allTriggers = getAllSlashTriggers();
+      for (const item of allTriggers) {
+        if (trimmed.toLowerCase().startsWith(item.trigger.toLowerCase() + " ") ||
+            trimmed.toLowerCase() === item.trigger.toLowerCase()) {
+          runtime.slashActiveCommand = item.command;
+          break;
+        }
+      }
+    }
+    // Show/hide menu
+    if (trimmed.startsWith("/") && !trimmed.includes(" ")) {
+      const matches = matchSlashCommands(trimmed);
+      if (matches.length > 0) {
+        showSlashMenu(matches);
+        return;
+      }
+    }
+    hideSlashMenu();
   }
 
   function renderComposerState() {
@@ -1267,9 +1635,9 @@
     }
     const pendingSince = getThreadPendingSince(thread);
     if (pending && pendingSince) {
-      dom.sendBtn.textContent = `发送中... ${formatElapsedTime(Date.now() - pendingSince)}`;
+      dom.sendBtn.title = `发送中... ${formatElapsedTime(Date.now() - pendingSince)}`;
     } else {
-      dom.sendBtn.textContent = pending ? "发送中..." : "Send";
+      dom.sendBtn.title = pending ? "发送中..." : "发送";
     }
 
     if (!thread) {
@@ -1286,6 +1654,10 @@
     }
     if (pending) {
       dom.input.placeholder = "正在等待当前请求完成...";
+      return;
+    }
+    if (runtime.slashActiveCommand) {
+      dom.input.placeholder = runtime.slashActiveCommand.placeholder || DEFAULT_INPUT_PLACEHOLDER;
       return;
     }
     dom.input.placeholder = DEFAULT_INPUT_PLACEHOLDER;
@@ -1342,6 +1714,13 @@
         threadId: state.activeThreadId || undefined,
         at: Date.now(),
       });
+      return;
+    }
+
+    const imageNode = target.closest(".message-inline-image");
+    if (imageNode instanceof HTMLImageElement) {
+      const imageUrl = imageNode.dataset.imageUrl || imageNode.src || "";
+      openImagePreview(imageUrl, imageNode.alt || "preview");
       return;
     }
 
@@ -1457,6 +1836,7 @@
       language: thread.language,
       imageDataUrl: mergedImageDataUrl,
       imageCount: imageCount > 0 ? imageCount : undefined,
+      attachments: normalizeAttachmentPayload(),
     });
     setHistoryOpen(false);
     setStatus({
@@ -1472,6 +1852,8 @@
     });
 
     dom.input.value = "";
+    runtime.slashActiveCommand = null;
+    hideSlashMenu();
     clearAttachments();
     saveDraft();
     renderComposerState();
@@ -1560,8 +1942,8 @@
         setStatus({
           kind: "progress",
           title: "正在打开浏览器",
-          detail: "将启动与验证码流程相同的 Playwright 浏览器窗口。",
-          suggestion: "你可以在浏览器中直接对话，登录状态会自动持久化。",
+          detail: "将启动 nodriver 登录验证窗口。",
+          suggestion: "完成验证后返回插件点击 Retry。",
           at: Date.now(),
         });
       });
@@ -1697,7 +2079,90 @@
       void sendCurrentMessage();
     });
 
+    if (dom.attachImageBtn) {
+      dom.attachImageBtn.addEventListener("click", () => {
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        fileInput.multiple = true;
+        fileInput.style.display = "none";
+        fileInput.addEventListener("change", () => {
+          const files = fileInput.files ? Array.from(fileInput.files) : [];
+          if (files.length) {
+            void addAttachmentsFromFiles(files).then((added) => {
+              if (added) {
+                setStatus({
+                  kind: "success",
+                  title: "图片已添加",
+                  detail: added > 1 ? `已添加 ${added} 张图片。` : "已添加 1 张图片。",
+                  suggestion: "输入问题后发送，或继续添加更多图片。",
+                  threadId: state.activeThreadId || undefined,
+                  at: Date.now(),
+                });
+              }
+            });
+          }
+          fileInput.remove();
+        });
+        document.body.appendChild(fileInput);
+        fileInput.click();
+      });
+    }
+
+    if (dom.slashCmdBtn) {
+      dom.slashCmdBtn.addEventListener("click", () => {
+        if (runtime.slashMenuVisible) {
+          hideSlashMenu();
+        } else {
+          dom.input.value = "/";
+          dom.input.focus();
+          dom.input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+    }
+
+    if (dom.drawImageBtn) {
+      dom.drawImageBtn.addEventListener("click", () => {
+        const drawCmd = SLASH_COMMANDS.find((c) => c.cmd === "/draw");
+        if (drawCmd) {
+          const existing = dom.input.value.trim();
+          dom.input.value = existing ? "/draw " + existing : "/draw ";
+          runtime.slashActiveCommand = drawCmd;
+          dom.input.placeholder = drawCmd.placeholder || "输入图片描述...";
+          hideSlashMenu();
+          dom.input.focus();
+          saveDraft();
+          renderComposerState();
+        }
+      });
+    }
+
     dom.input.addEventListener("keydown", (event) => {
+      // Slash menu keyboard navigation
+      if (runtime.slashMenuVisible && runtime.slashMenuItems.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          runtime.slashMenuActiveIndex = (runtime.slashMenuActiveIndex + 1) % runtime.slashMenuItems.length;
+          renderSlashMenu();
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          runtime.slashMenuActiveIndex = (runtime.slashMenuActiveIndex - 1 + runtime.slashMenuItems.length) % runtime.slashMenuItems.length;
+          renderSlashMenu();
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          selectSlashCommand(runtime.slashMenuActiveIndex);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          hideSlashMenu();
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         void sendCurrentMessage();
@@ -1705,6 +2170,7 @@
     });
 
     dom.input.addEventListener("input", () => {
+      updateSlashState();
       saveDraft();
       renderComposerState();
     });
@@ -1774,11 +2240,33 @@
       void handleMessagesClick(event);
     });
 
+    if (dom.imagePreviewBackdrop) {
+      dom.imagePreviewBackdrop.addEventListener("click", () => {
+        closeImagePreview();
+      });
+    }
+
+    if (dom.imagePreviewCloseBtn) {
+      dom.imagePreviewCloseBtn.addEventListener("click", () => {
+        closeImagePreview();
+      });
+    }
+
+    if (dom.imageDownloadBtn) {
+      dom.imageDownloadBtn.addEventListener("click", () => {
+        const imageUrl = dom.imageDownloadBtn.dataset.imageUrl || runtime.previewImageUrl || "";
+        requestImageDownload(imageUrl);
+      });
+    }
+
     window.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || !runtime.historyOpen) {
+      if (event.key === "Escape" && dom.imagePreview && !dom.imagePreview.classList.contains("hidden")) {
+        closeImagePreview();
         return;
       }
-      setHistoryOpen(false);
+      if (event.key === "Escape" && runtime.historyOpen) {
+        setHistoryOpen(false);
+      }
     });
   }
 

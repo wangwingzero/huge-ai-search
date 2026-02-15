@@ -104,61 +104,6 @@
           "group": "navigation@99"
         }
       ]
-    },
-    "configuration": {
-      "title": "HUGE",
-      "properties": {
-        "hugeAiChat.defaultLanguage": {
-          "type": "string",
-          "default": "zh-CN",
-          "enum": [
-            "zh-CN",
-            "en-US",
-            "ja-JP",
-            "ko-KR",
-            "de-DE",
-            "fr-FR"
-          ],
-          "description": "默认搜索语言。"
-        },
-        "hugeAiChat.maxThreads": {
-          "type": "number",
-          "default": 50,
-          "minimum": 1,
-          "maximum": 200,
-          "description": "最多保留的聊天线程数量。"
-        },
-        "hugeAiChat.mcp.command": {
-          "type": "string",
-          "default": "",
-          "description": "可选。覆盖 MCP Server 启动命令。"
-        },
-        "hugeAiChat.mcp.args": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "description": "可选。覆盖 MCP Server 启动参数。"
-        },
-        "hugeAiChat.mcp.cwd": {
-          "type": "string",
-          "default": "",
-          "description": "可选。MCP Server 工作目录。"
-        },
-        "hugeAiChat.mcp.env": {
-          "type": "object",
-          "default": {
-            "HUGE_AI_SEARCH_IMAGE_DRIVER": "playwright",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "35000",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.0"
-          },
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "可选。传递给 MCP 子进程的额外环境变量。"
-        }
-      }
     }
   },
   "scripts": {

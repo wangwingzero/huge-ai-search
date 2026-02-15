@@ -16,13 +16,15 @@ npm start            # Run the MCP server (node dist/index.js)
 ```bash
 cd extensions/huge-ai-chat
 npm install
-npm run compile       # tsc -p .
-npm run watch         # tsc -w -p .
-npm test              # check:release + compile + node --test
+npm run compile       # esbuild bundle (CJS, minified)
+npm run watch         # esbuild watch mode
+npm test              # check:release + tsc (type-check) + node --test
 npm run package:vsix  # Build .vsix for distribution
 ```
 
-Extension tests use Node's built-in `node:test` runner. Test files live in `extensions/huge-ai-chat/tests/`. Run a single test file with `node --test extensions/huge-ai-chat/tests/<file>.test.js` (after compile).
+Extension uses esbuild for bundling (CJS format for VS Code), not tsc. The `tsc -p .` step only runs during `npm test` for type-checking.
+
+Tests use Node's built-in `node:test` runner. Test files live in `extensions/huge-ai-chat/tests/`. Run a single test file with `node --test extensions/huge-ai-chat/tests/<file>.test.js` (after `tsc -p .` in the extension directory).
 
 The root project has no test suite or linter configured.
 

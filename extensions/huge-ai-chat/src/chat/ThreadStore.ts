@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import {
+  ChatAttachment,
   ChatMessage,
   ChatMessageStatus,
   ChatRole,
@@ -39,6 +40,33 @@ function isSearchLanguage(value: unknown): value is SearchLanguage {
     value === "de-DE" ||
     value === "fr-FR"
   );
+}
+
+function sanitizeAttachments(input: unknown): ChatAttachment[] | undefined {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+  const result: ChatAttachment[] = [];
+  for (const item of input.slice(0, 12)) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const candidate = item as Partial<ChatAttachment>;
+    if (typeof candidate.id !== "string" || typeof candidate.thumbDataUrl !== "string") {
+      continue;
+    }
+    const normalized: ChatAttachment = {
+      id: candidate.id,
+      thumbDataUrl: candidate.thumbDataUrl,
+      originalDataUrl:
+        typeof candidate.originalDataUrl === "string" ? candidate.originalDataUrl : undefined,
+      width: typeof candidate.width === "number" ? candidate.width : undefined,
+      height: typeof candidate.height === "number" ? candidate.height : undefined,
+      name: typeof candidate.name === "string" ? candidate.name : undefined,
+    };
+    result.push(normalized);
+  }
+  return result.length > 0 ? result : undefined;
 }
 
 export class ThreadStore {
@@ -156,7 +184,8 @@ export class ThreadStore {
     threadId: string,
     role: ChatRole,
     content: string,
-    status: ChatMessageStatus
+    status: ChatMessageStatus,
+    attachments?: ChatAttachment[]
   ): Promise<ChatMessage | undefined> {
     const thread = this.getThread(threadId);
     if (!thread) {
@@ -167,6 +196,7 @@ export class ThreadStore {
       id: createId("msg"),
       role,
       content,
+      attachments: sanitizeAttachments(attachments),
       createdAt: Date.now(),
       status,
     };
@@ -301,6 +331,7 @@ export class ThreadStore {
           id: typedMessage.id,
           role: typedMessage.role,
           content: typedMessage.content,
+          attachments: sanitizeAttachments(typedMessage.attachments),
           createdAt: typedMessage.createdAt,
           status: typedMessage.status,
         });

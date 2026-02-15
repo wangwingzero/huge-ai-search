@@ -560,6 +560,30 @@ select {
   color: var(--gh-fg-default);
 }
 
+.user-message-text {
+  margin: 0 0 10px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.user-message-text:last-child {
+  margin-bottom: 0;
+}
+
+.message-attachment-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.message.user .message-attachment-gallery .message-image-block {
+  margin: 0;
+}
+
+.message.user .message-attachment-gallery .message-inline-image {
+  max-width: min(100%, 220px);
+}
+
 .message h1,
 .message h2,
 .message h3,
@@ -694,6 +718,97 @@ select {
   margin: 6px 0;
 }
 
+.message-image-block {
+  margin: 10px 0;
+}
+
+.message-inline-image {
+  display: block;
+  max-width: min(100%, 720px);
+  width: auto;
+  height: auto;
+  border: 1px solid var(--gh-border-default);
+  border-radius: 8px;
+  background: var(--gh-canvas-subtle);
+  cursor: zoom-in;
+}
+
+.message-image-actions {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.message-image-download {
+  border: 1px solid var(--gh-border-default);
+  background: var(--gh-canvas-subtle);
+  color: var(--gh-fg-default);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 2px 8px;
+  height: 26px;
+  cursor: pointer;
+}
+
+.message-image-download:hover {
+  background: color-mix(in srgb, var(--gh-canvas-subtle) 84%, var(--gh-fg-default) 16%);
+}
+
+.image-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+}
+
+.image-preview.hidden {
+  display: none;
+}
+
+.image-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.72);
+}
+
+.image-preview-panel {
+  position: absolute;
+  inset: 24px;
+  border: 1px solid var(--gh-border-default);
+  border-radius: 12px;
+  background: var(--gh-canvas-default);
+  box-shadow: var(--gh-shadow-medium);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.image-preview-toolbar {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--gh-border-default);
+  background: var(--gh-canvas-subtle);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.image-preview-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow: auto;
+}
+
+.image-preview-content img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+}
+
 .code-block {
   border: 1px solid var(--gh-border-default);
   border-radius: 8px;
@@ -761,12 +876,63 @@ select {
 }
 
 .composer {
+  position: relative;
   border-top: 1px solid var(--gh-border-default);
   background: var(--gh-canvas-subtle);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.slash-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  border: 1px solid var(--gh-border-default);
+  border-radius: 8px;
+  background: var(--gh-canvas-default);
+  box-shadow: var(--gh-shadow-medium);
+  padding: 4px 0;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+
+.slash-menu.hidden {
+  display: none;
+}
+
+.slash-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.slash-menu-item:hover,
+.slash-menu-item.active {
+  background: color-mix(in srgb, var(--gh-accent-fg) 10%, var(--gh-canvas-default) 90%);
+}
+
+.slash-menu-item-cmd {
+  font-family: var(--gh-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gh-accent-fg);
+  white-space: nowrap;
+}
+
+.slash-menu-item-desc {
+  color: var(--gh-fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .attachment-bar {
@@ -836,32 +1002,99 @@ select {
   background: rgba(31, 35, 40, 0.9);
 }
 
-.composer-row {
+.composer-box {
+  border: 1px solid var(--gh-border-default);
+  border-radius: 10px;
+  background: var(--gh-canvas-default);
   display: flex;
-  gap: 8px;
-  align-items: stretch;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.composer-box:focus-within {
+  border-color: var(--gh-accent-fg);
+  box-shadow: 0 0 0 2px var(--gh-focus-ring);
 }
 
 .composer textarea {
   flex: 1;
-  min-height: 76px;
+  min-height: 64px;
   max-height: 220px;
   resize: vertical;
-  border-radius: 8px;
-  border: 1px solid var(--gh-border-default);
-  background: var(--gh-canvas-default);
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: var(--gh-fg-default);
-  padding: 10px 12px;
+  padding: 10px 12px 4px 12px;
   font-size: 14px;
   line-height: 1.5;
+  outline: none;
+}
+
+.composer textarea:focus-visible {
+  box-shadow: none;
 }
 
 .composer textarea::placeholder {
   color: var(--gh-fg-muted);
 }
 
-.composer #sendBtn {
-  min-width: 84px;
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 6px 6px;
+  gap: 4px;
+}
+
+.composer-toolbar-left,
+.composer-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.composer-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gh-fg-muted);
+  cursor: pointer;
+}
+
+.composer-tool-btn:hover {
+  color: var(--gh-fg-default);
+  background: var(--gh-canvas-subtle);
+  border-color: var(--gh-border-default);
+}
+
+.composer-send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: var(--gh-accent-emphasis);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.composer-send-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--gh-accent-emphasis) 85%, black 15%);
+}
+
+.composer-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 @media (max-width: 860px) {
@@ -880,13 +1113,5 @@ select {
 
   .message.assistant {
     margin-right: 0;
-  }
-
-  .composer-row {
-    flex-direction: column;
-  }
-
-  .composer #sendBtn {
-    width: 100%;
   }
 }

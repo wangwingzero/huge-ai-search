@@ -45,6 +45,8 @@ export interface SearchResult {
   aiAnswer: string;
   sources: SearchSource[];
   error: string;
+  /** AI 容器（div[data-subtree="aimc"]）的文本长度，0 表示容器为空 / 不存在 */
+  aiContainerLength?: number;
 }
 
 interface FileInputSnapshot {
@@ -251,12 +253,19 @@ const IMAGE_FILE_INPUT_SELECTORS = [
 ];
 
 const IMAGE_ATTACHMENT_READY_SELECTORS = [
+  // Google 2025+ 上传后图片缩略图使用 data URL（不是 blob URL）
+  'div[data-subtree="aimc"] img[src^="data:image"]',
   'div[data-subtree="aimc"] img[src^="blob:"]',
+  // 关闭/移除按钮（Google 英文版用 Dismiss，中文版用 移除/删除）
+  'div[data-subtree="aimc"] button[aria-label*="Dismiss"]',
   'div[data-subtree="aimc"] button[aria-label*="移除"]',
   'div[data-subtree="aimc"] button[aria-label*="删除"]',
   'div[data-subtree="aimc"] button[aria-label*="Remove"]',
   'div[data-subtree="aimc"] [role="button"][aria-label*="移除"]',
   'div[data-subtree="aimc"] [role="button"][aria-label*="Remove"]',
+  // 上传后文件缩略图按钮
+  'div[data-subtree="aimc"] [role="button"][aria-label="File"]',
+  'div[data-subtree="aimc"] [role="button"][aria-label="文件"]',
 ];
 
 const SUBMIT_BUTTON_HINTS = [
@@ -1817,6 +1826,7 @@ async def main() -> int:
     parser.add_argument("--state-path", required=True)
     parser.add_argument("--wait-seconds", type=int, default=300)
     parser.add_argument("--proxy", default="")
+    parser.add_argument("--mode", choices=["setup", "browse"], default="setup")
     args = parser.parse_args()
 
     try:
@@ -1861,45 +1871,75 @@ async def main() -> int:
         tab = await browser.get(args.url)
         await asyncio.sleep(1.5)
 
-        deadline = time.monotonic() + max(10, int(args.wait_seconds))
-        timeout_reason = "verification not completed"
+        if args.mode == "browse":
+            # Free-browsing mode: periodically snapshot cookies while browser is open,
+            # then save the last snapshot when user closes the window.
+            # We must fetch cookies BEFORE the browser closes because the CDP
+            # connection dies when the browser process exits.
+            last_cookies = []
+            try:
+                while True:
+                    await asyncio.sleep(2)
+                    try:
+                        await tab.get_content()
+                        # Browser is still alive — snapshot cookies
+                        snapshot = await fetch_raw_cookies(tab, browser)
+                        if snapshot:
+                            last_cookies = snapshot
+                    except Exception:
+                        # Tab/browser closed — stop polling
+                        break
+            except Exception:
+                pass
 
-        while time.monotonic() < deadline:
-            content = ""
-            current_url = ""
-            try:
-                content = await tab.get_content()
-            except Exception:
+            # Save the last successful cookie snapshot
+            if save_storage_state(last_cookies, args.state_path):
+                emit(True, True, "browser closed, storage state saved")
+                return 0
+            else:
+                emit(True, False, "browser closed, no cookies to save")
+                return 0
+        else:
+            # Setup mode: poll for login cookies
+            deadline = time.monotonic() + max(10, int(args.wait_seconds))
+            timeout_reason = "verification not completed"
+
+            while time.monotonic() < deadline:
                 content = ""
-            try:
-                current_url = str(getattr(tab.target, "url", "") or "")
-            except Exception:
                 current_url = ""
+                try:
+                    content = await tab.get_content()
+                except Exception:
+                    content = ""
+                try:
+                    current_url = str(getattr(tab.target, "url", "") or "")
+                except Exception:
+                    current_url = ""
+
+                raw_cookies = await fetch_raw_cookies(tab, browser)
+                blocked = is_blocked_page(content, current_url)
+                passed = has_pass_cookie(raw_cookies)
+
+                if passed and not blocked:
+                    if save_storage_state(raw_cookies, args.state_path):
+                        emit(True, True, "verification passed and storage state saved")
+                        return 0
+                    timeout_reason = "pass cookies detected but serialization failed"
+                else:
+                    if blocked:
+                        timeout_reason = "still blocked by captcha/suspicious traffic page"
+                    else:
+                        timeout_reason = "login cookies not ready"
+
+                await asyncio.sleep(2)
 
             raw_cookies = await fetch_raw_cookies(tab, browser)
-            blocked = is_blocked_page(content, current_url)
-            passed = has_pass_cookie(raw_cookies)
+            if save_storage_state(raw_cookies, args.state_path):
+                emit(True, True, "timeout reached; current cookies saved")
+                return 0
 
-            if passed and not blocked:
-                if save_storage_state(raw_cookies, args.state_path):
-                    emit(True, True, "verification passed and storage state saved")
-                    return 0
-                timeout_reason = "pass cookies detected but serialization failed"
-            else:
-                if blocked:
-                    timeout_reason = "still blocked by captcha/suspicious traffic page"
-                else:
-                    timeout_reason = "login cookies not ready"
-
-            await asyncio.sleep(2)
-
-        raw_cookies = await fetch_raw_cookies(tab, browser)
-        if save_storage_state(raw_cookies, args.state_path):
-            emit(True, True, "timeout reached; current cookies saved")
-            return 0
-
-        emit(False, False, f"verification timeout: {timeout_reason}")
-        return 1
+            emit(False, False, f"verification timeout: {timeout_reason}")
+            return 1
     except Exception as exc:
         emit(False, False, f"nodriver auth flow failed: {exc}")
         return 1
@@ -2000,6 +2040,9 @@ export class AISearcher {
   private sessionActive: boolean = false;
   private lastActivityTime: number = 0;
   private lastAiAnswer: string = "";
+  private lastAiAnswerTextOnly: string = "";
+  private lastWasImageCreation: boolean = false;
+  private storageStateMtimeMs: number = 0;
   private browserDataDir: string;
   private timeout: number;
   private headless: boolean;
@@ -2234,7 +2277,7 @@ export class AISearcher {
 
   /**
    * 加载存储状态（如果存在）
-   * 优先使用会话目录下的状态，如果没有则从共享目录复制
+   * 优先使用共享状态，并同步到会话目录，避免会话状态陈旧
    */
   private loadStorageState(): string | undefined {
     const sessionStatePath = this.getStorageStatePath();
@@ -2242,49 +2285,65 @@ export class AISearcher {
     const hasSessionState = fs.existsSync(sessionStatePath);
     const hasSharedState = fs.existsSync(sharedStatePath);
 
-    // 0. 如果共享状态更新，优先覆盖会话状态，避免使用陈旧认证信息
-    if (hasSessionState && hasSharedState) {
+    // 0. 只要有共享状态，优先覆盖会话状态，确保使用最新认证信息
+    if (hasSharedState) {
       try {
-        const sessionMtime = fs.statSync(sessionStatePath).mtimeMs;
-        const sharedMtime = fs.statSync(sharedStatePath).mtimeMs;
-        if (sharedMtime > sessionMtime + 1) {
-          fs.copyFileSync(sharedStatePath, sessionStatePath);
-          console.error(
-            `检测到共享认证状态更新，覆盖会话状态: ${sharedStatePath} -> ${sessionStatePath}`
-          );
-        }
+        fs.copyFileSync(sharedStatePath, sessionStatePath);
+        console.error(
+          `优先同步共享认证状态: ${sharedStatePath} -> ${sessionStatePath}`
+        );
+        return sessionStatePath;
       } catch (error) {
         console.error(`同步共享认证状态失败: ${error}`);
+        console.error(`回退到直接使用共享认证状态: ${sharedStatePath}`);
+        return sharedStatePath;
       }
     }
 
     // 1. 优先检查会话目录下的认证状态
-    if (fs.existsSync(sessionStatePath)) {
+    if (hasSessionState) {
       console.error(`加载会话认证状态: ${sessionStatePath}`);
       return sessionStatePath;
-    }
-
-    // 2. 如果会话目录没有，尝试从共享目录复制
-    if (hasSharedState) {
-      try {
-        fs.copyFileSync(sharedStatePath, sessionStatePath);
-        console.error(`从共享目录复制认证状态: ${sharedStatePath} -> ${sessionStatePath}`);
-        return sessionStatePath;
-      } catch (error) {
-        console.error(`复制共享认证状态失败: ${error}`);
-        // 复制失败时，直接使用共享状态（只读）
-        console.error(`回退到直接使用共享认证状态: ${sharedStatePath}`);
-        return sharedStatePath;
-      }
     }
 
     console.error("未找到任何认证状态文件");
     return undefined;
   }
 
-  private shouldUseNodriverAuth(): boolean {
-    const driver = (process.env.HUGE_AI_SEARCH_AUTH_DRIVER || "nodriver").trim().toLowerCase();
-    return driver === "nodriver";
+  /**
+   * 检查共享 storage_state.json 是否在会话创建后被更新（如 nodriver 登录后）。
+   * 如果是，重新加载 cookies 到当前浏览器上下文。
+   */
+  private async reloadStorageStateIfNeeded(): Promise<void> {
+    if (!this.context) return;
+    const sharedPath = this.getSharedStorageStatePath();
+    if (!fs.existsSync(sharedPath)) return;
+
+    let currentMtime: number;
+    try {
+      currentMtime = fs.statSync(sharedPath).mtimeMs;
+    } catch {
+      return;
+    }
+
+    if (this.storageStateMtimeMs > 0 && currentMtime <= this.storageStateMtimeMs) {
+      return; // 未更新
+    }
+
+    console.error("检测到共享认证状态已更新，重新加载 cookies...");
+    try {
+      const raw = fs.readFileSync(sharedPath, "utf-8");
+      const state = JSON.parse(raw);
+      const cookies = Array.isArray(state.cookies) ? state.cookies : [];
+      if (cookies.length > 0) {
+        await this.context.clearCookies();
+        await this.context.addCookies(cookies);
+        this.storageStateMtimeMs = currentMtime;
+        console.error(`已重新加载 ${cookies.length} 个 cookies`);
+      }
+    } catch (error) {
+      console.error(`重新加载认证状态失败: ${error}`);
+    }
   }
 
   private getNodriverWaitSeconds(): number {
@@ -2468,15 +2527,7 @@ export class AISearcher {
     };
   }
 
-  private async runNodriverAuthFlow(targetUrl: string): Promise<NodriverBridgeResult> {
-    if (!this.shouldUseNodriverAuth()) {
-      return {
-        success: false,
-        stateSaved: false,
-        message: "nodriver 认证流程已禁用（HUGE_AI_SEARCH_AUTH_DRIVER != nodriver）",
-      };
-    }
-
+  private async runNodriverAuthFlow(targetUrl: string, browse: boolean = false): Promise<NodriverBridgeResult> {
     const storageStatePath = this.getSharedStorageStatePath();
     const sharedDir = path.dirname(storageStatePath);
     if (!fs.existsSync(sharedDir)) {
@@ -2485,7 +2536,9 @@ export class AISearcher {
 
     const scriptPath = this.ensureNodriverBridgeScript();
     const waitSeconds = this.getNodriverWaitSeconds();
-    const timeoutMs = Math.max((waitSeconds + 45) * 1000, 90_000);
+    const timeoutMs = browse
+      ? 2 * 60 * 60 * 1000  // 2 hours for free browsing
+      : Math.max((waitSeconds + 45) * 1000, 90_000);
     const proxy = await this.detectProxy();
 
     const baseArgs = [
@@ -2496,6 +2549,8 @@ export class AISearcher {
       storageStatePath,
       "--wait-seconds",
       `${waitSeconds}`,
+      "--mode",
+      browse ? "browse" : "setup",
     ];
     if (proxy) {
       baseArgs.push("--proxy", proxy);
@@ -2897,6 +2952,7 @@ export class AISearcher {
       const contextOptions: Parameters<Browser["newContext"]>[0] = {
         viewport: this.headless ? { width: 1920, height: 1080 } : null,
         locale: language,
+        permissions: ["clipboard-read", "clipboard-write"],
       };
 
       // 尝试加载共享的认证状态
@@ -2904,6 +2960,11 @@ export class AISearcher {
       if (storageStatePath) {
         contextOptions.storageState = storageStatePath;
         console.error(`已加载共享认证状态: ${storageStatePath}`);
+        try {
+          this.storageStateMtimeMs = fs.statSync(this.getSharedStorageStatePath()).mtimeMs;
+        } catch {
+          this.storageStateMtimeMs = Date.now();
+        }
       } else {
         console.error("无共享认证状态，使用新会话");
       }
@@ -3131,33 +3192,22 @@ export class AISearcher {
   ): Promise<boolean> {
     console.error("等待 AI 流式输出完成...");
 
-    let lastContentLength = 0;
+    let lastAiContainerLength = 0;
+    let lastBodyLength = 0;
     let stableCount = 0;
-    const stableThreshold = 2;
+    const stableThreshold = 3;
     const checkInterval = 500;
-    const minContentLength = maxWaitSeconds >= 20 ? 120 : 60;
+    const minAiContentLength = maxWaitSeconds >= 20 ? 100 : 40;
+
+    const loadingKeywordsJson = JSON.stringify(AI_LOADING_KEYWORDS);
 
     for (let i = 0; i < maxWaitSeconds * 2; i++) {
       try {
-        const content = (await page.evaluate(
-          "document.body.innerText"
-        )) as string;
-        const currentLength = content.length;
-
-        // 策略1：检查加载指示器
-        const hasLoadingIndicator = await this.checkLoadingIndicators(page);
-
-        // 策略2：检查是否仍在加载状态（关键词检测）
-        const isLoading = AI_LOADING_KEYWORDS.some((kw) =>
-          content.includes(kw)
-        );
-
-        // 策略3：检查追问建议是否出现
-        const hasFollowUp = await this.checkFollowUpSuggestions(page);
-
-        // 策略4：检查来源链接数量（确保来源已加载）
-        const sourceCount = await page.evaluate(`
+        // 单次 evaluate 获取所有信息，避免多次 round-trip
+        const info = (await page.evaluate(`
           (() => {
+            const loadingKws = ${loadingKeywordsJson};
+
             function isGoogleHost(hostname) {
               const host = (hostname || "").toLowerCase();
               return host.includes('google.') || host.includes('gstatic.com') || host.includes('googleapis.com');
@@ -3167,70 +3217,90 @@ export class AISearcher {
               if (!rawHref) return '';
               try {
                 const parsed = new URL(rawHref);
-                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-                  return '';
-                }
-
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
                 if (isGoogleHost(parsed.hostname)) {
                   const redirect = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
                   if (!redirect) return '';
                   const target = new URL(redirect);
-                  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-                    return '';
-                  }
-                  if (isGoogleHost(target.hostname)) {
-                    return '';
-                  }
+                  if (target.protocol !== 'http:' && target.protocol !== 'https:') return '';
+                  if (isGoogleHost(target.hostname)) return '';
                   return target.href;
                 }
-
                 return parsed.href;
               } catch {
                 return '';
               }
             }
 
+            const bodyText = document.body.innerText || '';
             const aiContainer = document.querySelector('div[data-subtree="aimc"]');
-            if (!aiContainer) return 0;
-            const links = aiContainer.querySelectorAll('a[href]');
-            const seen = new Set();
-            let count = 0;
-            links.forEach(link => {
-              const href = normalizeLink(link.href);
-              if (href && !seen.has(href)) {
-                seen.add(href);
-                count++;
-              }
-            });
-            return count;
-          })()
-        `) as number;
+            const aiText = aiContainer ? (aiContainer.innerText || '') : '';
 
-        if (hasFollowUp && currentLength >= minContentLength) {
-          if (sourceCount >= 1) {
+            let sourceCount = 0;
+            if (aiContainer) {
+              const links = aiContainer.querySelectorAll('a[href]');
+              const seen = new Set();
+              links.forEach(link => {
+                const href = normalizeLink(link.href);
+                if (href && !seen.has(href)) {
+                  seen.add(href);
+                  sourceCount++;
+                }
+              });
+            }
+
+            const isLoading = loadingKws.some(kw => bodyText.includes(kw));
+
+            return {
+              aiContainerLength: aiText.length,
+              bodyLength: bodyText.length,
+              sourceCount,
+              isLoading,
+            };
+          })()
+        `)) as {
+          aiContainerLength: number;
+          bodyLength: number;
+          sourceCount: number;
+          isLoading: boolean;
+        };
+
+        // 使用 AI 容器长度做稳定性判断（如有容器），否则回退到 body 长度
+        const hasAiContainer = info.aiContainerLength > 0;
+        const trackingLength = hasAiContainer ? info.aiContainerLength : info.bodyLength;
+        const lastTrackingLength = hasAiContainer ? lastAiContainerLength : lastBodyLength;
+
+        // 策略1：检查加载指示器
+        const hasLoadingIndicator = await this.checkLoadingIndicators(page);
+
+        // 策略2：检查追问建议是否出现
+        const hasFollowUp = await this.checkFollowUpSuggestions(page);
+
+        if (hasFollowUp && trackingLength >= minAiContentLength) {
+          if (info.sourceCount >= 1) {
             console.error(
-              `检测到追问建议，AI 输出完成，内容长度: ${currentLength}，来源数: ${sourceCount}`
+              `检测到追问建议，AI 输出完成，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}`
             );
           } else {
             console.error(
-              `检测到追问建议，内容长度: ${currentLength}，来源数: ${sourceCount}，按降级策略提前返回`
+              `检测到追问建议，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}，按降级策略提前返回`
             );
           }
           return true;
         }
 
-        if (hasLoadingIndicator || isLoading) {
+        if (hasLoadingIndicator || info.isLoading) {
           stableCount = 0;
-        } else if (currentLength === lastContentLength) {
-          if (currentLength >= minContentLength) {
+        } else if (trackingLength === lastTrackingLength && trackingLength > 0) {
+          if (trackingLength >= minAiContentLength) {
             stableCount++;
             if (stableCount >= stableThreshold) {
-              if (sourceCount >= 1) {
-                console.error(`AI 输出完成，内容长度: ${currentLength}，来源数: ${sourceCount}`);
+              if (info.sourceCount >= 1) {
+                console.error(`AI 输出完成，AI容器长度: ${info.aiContainerLength}，body长度: ${info.bodyLength}，来源数: ${info.sourceCount}`);
                 return true;
               } else {
                 console.error(
-                  `内容已稳定但来源链接不足 (${sourceCount})，按降级策略返回以避免超时`
+                  `内容已稳定但来源链接不足 (${info.sourceCount})，AI容器长度: ${info.aiContainerLength}，按降级策略返回以避免超时`
                 );
                 return true;
               }
@@ -3240,7 +3310,8 @@ export class AISearcher {
           stableCount = 0;
         }
 
-        lastContentLength = currentLength;
+        lastAiContainerLength = info.aiContainerLength;
+        lastBodyLength = info.bodyLength;
         await page.waitForTimeout(checkInterval);
       } catch (error) {
         console.error(`等待输出时出错: ${error}`);
@@ -3249,6 +3320,43 @@ export class AISearcher {
     }
 
     console.error(`等待超时（${maxWaitSeconds}秒）`);
+    return false;
+  }
+
+  /**
+   * 追问提交后，等待页面内容真正开始变化（新回答开始渲染），
+   * 避免 waitForStreamingComplete 在旧内容上误判为"稳定"而提前返回。
+   */
+  private async waitForFollowUpContentChange(
+    page: Page,
+    preSubmitLength: number,
+    maxWaitMs: number = 8000
+  ): Promise<boolean> {
+    const interval = 400;
+    const maxChecks = Math.ceil(maxWaitMs / interval);
+    for (let i = 0; i < maxChecks; i++) {
+      await page.waitForTimeout(interval);
+      if (await this.checkLoadingIndicators(page)) {
+        console.error("追问后检测到加载指示器，新内容已开始渲染");
+        return true;
+      }
+      try {
+        const len = (await page.evaluate(
+          "document.body.innerText.length"
+        )) as number;
+        if (len > preSubmitLength + 20) {
+          console.error(
+            `追问后页面内容已增长: ${preSubmitLength} → ${len}`
+          );
+          return true;
+        }
+      } catch {
+        // ignore evaluation errors
+      }
+    }
+    console.error(
+      `追问后等待内容变化超时（${maxWaitMs}ms），继续执行`
+    );
     return false;
   }
 
@@ -3263,7 +3371,8 @@ export class AISearcher {
     (() => {
       const result = {
         aiAnswer: '',
-        sources: []
+        sources: [],
+        containerAnswerLength: 0
       };
       
       const mainContent = document.body.innerText;
@@ -3402,12 +3511,28 @@ export class AISearcher {
       let containerAnswer = '';
       for (const selector of candidateSelectors) {
         const nodes = document.querySelectorAll(selector);
-        for (const node of nodes) {
-          const raw = (node && ((node.innerText || node.textContent || ''))) || '';
-          if (!raw || raw.trim().length === 0) continue;
-          const cleaned = cleanAnswer(raw);
-          if (cleaned.length > containerAnswer.length) {
-            containerAnswer = cleaned;
+        if (selector === 'div[data-subtree="aimc"]' && nodes.length > 1) {
+          // 对话模式：页面有多个 aimc 容器（每个回答一个），需要拼接所有容器内容
+          let combined = '';
+          for (const node of nodes) {
+            const raw = (node && ((node.innerText || node.textContent || ''))) || '';
+            if (!raw || raw.trim().length === 0) continue;
+            const cleaned = cleanAnswer(raw);
+            if (cleaned) {
+              combined += (combined ? '\\n\\n' : '') + cleaned;
+            }
+          }
+          if (combined.length > containerAnswer.length) {
+            containerAnswer = combined;
+          }
+        } else {
+          for (const node of nodes) {
+            const raw = (node && ((node.innerText || node.textContent || ''))) || '';
+            if (!raw || raw.trim().length === 0) continue;
+            const cleaned = cleanAnswer(raw);
+            if (cleaned.length > containerAnswer.length) {
+              containerAnswer = cleaned;
+            }
           }
         }
       }
@@ -3444,15 +3569,79 @@ export class AISearcher {
         fallbackAnswer = cleanAnswer(mainContent.substring(0, endIndex));
       }
 
+      result.containerAnswerLength = containerAnswer.length;
       result.aiAnswer =
         containerAnswer.length >= 40
           ? containerAnswer
           : (containerAnswer.length > fallbackAnswer.length ? containerAnswer : fallbackAnswer);
+
+      const aiContainers = document.querySelectorAll('div[data-subtree="aimc"]');
+      const aiContainer = aiContainers.length > 0 ? aiContainers[0] : null;
+
+      // 提取 AI 生成图片（若有），用于在插件中内联展示
+      // 扫描所有 aimc 容器（对话模式下可能有多个）
+      const imageNodes = aiContainers.length > 0
+        ? Array.from(aiContainers).flatMap(c => Array.from(c.querySelectorAll('img[src]')))
+        : Array.from(document.querySelectorAll('img[src]'));
+      const seenImageUrls = new Set();
+      const imageUrls = [];
+
+      function resolveImageSrc(rawSrc) {
+        if (!rawSrc) return '';
+        const trimmed = String(rawSrc).trim();
+        if (!trimmed) return '';
+        if (trimmed.startsWith('data:image/')) {
+          return trimmed;
+        }
+        try {
+          const parsed = new URL(trimmed, location.href);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return '';
+          }
+          return parsed.href;
+        } catch {
+          return '';
+        }
+      }
+
+      imageNodes.forEach((img) => {
+        const src = resolveImageSrc(img.getAttribute('src') || '');
+        if (!src || seenImageUrls.has(src)) {
+          return;
+        }
+
+        const width = Number(img.naturalWidth || img.width || 0);
+        const height = Number(img.naturalHeight || img.height || 0);
+
+        // 过滤 favicon / avatar / UI 图标等小图
+        if (width > 0 && height > 0 && (width < 180 || height < 180)) {
+          return;
+        }
+
+        const alt = String(img.getAttribute('alt') || '').toLowerCase();
+        if (alt.includes('avatar') || alt.includes('icon') || alt.includes('logo')) {
+          return;
+        }
+
+        seenImageUrls.add(src);
+        if (imageUrls.length < 4) {
+          imageUrls.push(src);
+        }
+      });
+
+      if (imageUrls.length > 0) {
+        const imageMarkdown = imageUrls
+          .map((src, index) => '![AI 生成图片 ' + (index + 1) + '](<' + src + '>)')
+          .join('\\n\\n');
+        if (imageMarkdown.trim().length > 0 && !result.aiAnswer.includes(imageMarkdown)) {
+          result.aiAnswer = (result.aiAnswer + '\\n\\n### 生成图片\\n\\n' + imageMarkdown).trim();
+        }
+      }
       
-      // 提取来源链接（从 AI 模式容器中提取）
-      const aiContainer = document.querySelector('div[data-subtree="aimc"]');
-      const linkContainer = aiContainer || document;
-      const links = linkContainer.querySelectorAll('a[href]');
+      // 提取来源链接（从 AI 模式容器中提取，扫描所有容器）
+      const linkNodes = aiContainers.length > 0
+        ? Array.from(aiContainers).flatMap(c => Array.from(c.querySelectorAll('a[href]')))
+        : Array.from(document.querySelectorAll('a[href]'));
       const seenUrls = new Set();
 
       function isGoogleHost(hostname) {
@@ -3491,8 +3680,8 @@ export class AISearcher {
           return '';
         }
       }
-      
-      links.forEach(link => {
+
+      linkNodes.forEach(link => {
         const href = resolveSourceHref(link.href);
         if (!href) {
           return;
@@ -3547,6 +3736,8 @@ export class AISearcher {
       const data = (await page.evaluate(jsCode)) as {
         aiAnswer: string;
         sources: { title: string; url: string; snippet: string }[];
+        images?: string[];
+        containerAnswerLength?: number;
       } | undefined;
 
       if (!data) {
@@ -3571,6 +3762,7 @@ export class AISearcher {
         aiAnswer: data.aiAnswer || "",
         sources,
         error: "",
+        aiContainerLength: data.containerAnswerLength ?? -1,
       };
     } catch (error) {
       return {
@@ -3584,7 +3776,7 @@ export class AISearcher {
   }
 
   /**
-   * 处理验证码 - 弹出有界面的浏览器让用户完成验证
+   * 处理验证码 - 使用 nodriver 打开浏览器完成验证
    * 使用全局锁防止多个请求同时打开多个浏览器窗口
    */
   private async handleCaptcha(
@@ -3617,181 +3809,23 @@ export class AISearcher {
     }
 
     // lockResult === "acquired"，继续处理 CAPTCHA
-    log("CAPTCHA", "检测到验证码，正在打开浏览器窗口...");
+    log("CAPTCHA", "检测到验证码，正在通过 nodriver 打开浏览器窗口...");
     log("CAPTCHA", "请在浏览器中完成验证码验证，最长等待 5 分钟");
 
     // 关闭当前的 headless 浏览器
     await this.close();
 
-    if (this.shouldUseNodriverAuth()) {
-      log("CAPTCHA", "优先使用 nodriver 执行人工验证流程...");
-      try {
-        const nodriverResult = await this.runNodriverAuthFlow(url);
-        if (nodriverResult.success && nodriverResult.stateSaved) {
-          result.error = "验证已完成，请重新搜索";
-          log("CAPTCHA", `nodriver 验证成功: ${nodriverResult.message}`);
-          releaseCaptchaLock();
-          return result;
-        }
-        log(
-          "CAPTCHA",
-          `nodriver 验证失败，将回退 Playwright 验证窗口: ${nodriverResult.message}`
-        );
-      } catch (error) {
-        log("CAPTCHA", `nodriver 验证流程异常，将回退 Playwright: ${error}`);
-      }
-    }
-
     try {
-      const executablePath = this.findBrowser();
-      log("CAPTCHA", `使用浏览器: ${executablePath}`);
-      const proxy = await this.detectProxy();
-      const launchOptions = this.buildLaunchOptions(executablePath, false, proxy);
-
-      if (proxy) {
-        log("CAPTCHA", `使用代理: ${proxy}`);
+      log("CAPTCHA", "使用 nodriver 执行人工验证流程...");
+      const nodriverResult = await this.runNodriverAuthFlow(url);
+      if (nodriverResult.success && nodriverResult.stateSaved) {
+        result.error = "验证已完成，请重新搜索";
+        log("CAPTCHA", `nodriver 验证成功: ${nodriverResult.message}`);
+        return result;
       }
-
-      const browser = await chromium.launch(launchOptions);
-      log("CAPTCHA", "浏览器已启动");
-
-      const storageStatePath = this.getStorageStatePath();
-      const contextOptions = this.buildHeadedContextOptions(storageStatePath);
-      if (contextOptions.storageState) {
-        log("CAPTCHA", `加载已有认证状态: ${storageStatePath}`);
-      }
-
-      const context = await browser.newContext(contextOptions);
-      const page = await context.newPage();
-
-      log("CAPTCHA", `导航到: ${url}`);
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
-      });
-
-      const maxWaitMs = 5 * 60 * 1000;
-      const checkInterval = 1500; // 缩短检查间隔，更快响应验证成功
-      const startTime = Date.now();
-      let captchaPassedTime = 0; // 记录验证码通过的时间
-      const postCaptchaWaitMs = 15000; // 验证通过后额外等待 15 秒让页面加载
-
-      log("CAPTCHA", "浏览器窗口已打开，等待用户完成验证...");
-
-      while (Date.now() - startTime < maxWaitMs) {
-        try {
-          // 不再频繁保存状态，避免弹窗问题
-
-          let content: string;
-          let currentUrl: string;
-          try {
-            content = (await page.evaluate("document.body.innerText")) as string;
-            currentUrl = page.url();
-          } catch (evalError) {
-            // 页面可能正在导航，等待后重试
-            await page.waitForTimeout(1000);
-            continue;
-          }
-
-          const isProblemPage =
-            this.isCaptchaPage(content) ||
-            currentUrl.toLowerCase().includes("sorry");
-
-          // 检测验证码是否已通过（不再是问题页面）
-          if (!isProblemPage && captchaPassedTime === 0) {
-            captchaPassedTime = Date.now();
-            log("CAPTCHA", "✅ 检测到验证码已通过！等待页面加载搜索结果...");
-          }
-
-          const hasAiModeIndicator =
-            content.includes("AI 模式") || content.includes("AI Mode");
-          const hasSubstantialContent = content.length > 2000;
-          const isNotLoading =
-            !content.includes("正在思考") && !content.includes("Thinking");
-          const hasSearchResult =
-            hasAiModeIndicator && hasSubstantialContent && isNotLoading;
-
-          // 验证通过后，等待搜索结果
-          if (!isProblemPage && hasSearchResult) {
-            log("CAPTCHA", "验证成功！正在获取搜索结果...");
-
-            // 等待 AI 输出完成
-            await this.waitForStreamingComplete(page, 16);
-
-            // 提取结果
-            const extractedResult = await this.extractAiAnswer(page);
-            result.aiAnswer = extractedResult.aiAnswer;
-            result.sources = extractedResult.sources;
-            result.success = result.aiAnswer.length > 0;
-
-            // 只在成功时保存一次状态
-            try {
-              await context.storageState({ path: storageStatePath });
-              log("CAPTCHA", `验证完成，已保存认证状态: ${storageStatePath}`);
-            } catch {
-              log("CAPTCHA", "保存认证状态失败");
-            }
-
-            break;
-          }
-
-          // 如果验证已通过但还没有搜索结果，检查是否需要刷新页面
-          if (captchaPassedTime > 0 && !hasSearchResult) {
-            const timeSinceCaptchaPassed = Date.now() - captchaPassedTime;
-            
-            // 验证通过后 5 秒还没有结果，尝试刷新页面
-            if (timeSinceCaptchaPassed > 5000 && timeSinceCaptchaPassed < 6000) {
-              log("CAPTCHA", "验证通过但未检测到搜索结果，尝试刷新页面...");
-              try {
-                await page.reload({ waitUntil: "domcontentloaded", timeout: 15000 });
-              } catch {
-                log("CAPTCHA", "刷新页面超时，继续等待...");
-              }
-            }
-            
-            // 验证通过后超过 15 秒还没有结果，保存状态并退出
-            if (timeSinceCaptchaPassed > postCaptchaWaitMs) {
-              log("CAPTCHA", "验证已通过，但未能获取搜索结果。保存认证状态...");
-              try {
-                await context.storageState({ path: storageStatePath });
-              } catch {
-                // ignore
-              }
-              result.success = false;
-              result.error = "验证已通过，请重新搜索";
-              break;
-            }
-          }
-
-          await page.waitForTimeout(checkInterval);
-        } catch (error) {
-          log("ERROR", `等待验证时出错: ${error}`);
-          // 不要立即退出，可能只是页面导航中的临时错误
-          await page.waitForTimeout(1000);
-        }
-      }
-
-      if (!result.success && !result.error) {
-        // 检查是否验证已通过但超时
-        if (captchaPassedTime > 0) {
-          log("CAPTCHA", "验证已通过，但获取搜索结果超时");
-          result.error = "验证已通过，但获取搜索结果超时。认证状态已保存，请重新搜索。";
-        } else {
-          log("CAPTCHA", "验证超时或用户关闭了浏览器");
-          result.error = "验证超时或用户关闭了浏览器";
-        }
-      }
-
-      try {
-        await context.close();
-      } catch {
-        // ignore
-      }
-      try {
-        await browser.close();
-      } catch {
-        // ignore
-      }
+      result.error = `验证码处理失败: ${nodriverResult.message}`;
+      log("CAPTCHA", result.error);
+      return result;
     } catch (error) {
       result.error = `验证码处理失败: ${error instanceof Error ? error.message : String(error)}`;
       log("ERROR", result.error);
@@ -4578,7 +4612,7 @@ export class AISearcher {
             continue;
           }
           await this.safeClickElement(input, 1500);
-          await this.page.waitForTimeout(120);
+          await this.page.waitForTimeout(80);
 
           try {
             await input.fill("", { timeout: 1200 });
@@ -4605,7 +4639,16 @@ export class AISearcher {
             );
           }
 
-          await this.page.waitForTimeout(180);
+          await this.page.waitForTimeout(120);
+
+          // 优先 Enter 提交（最快，无需查找按钮）
+          try {
+            await input.press("Enter", { timeout: 1000 });
+            return true;
+          } catch {
+            // Enter 失败，fallback 到按钮点击
+          }
+
           let hasAnySendCandidate = false;
 
           for (const sendSelector of IMAGE_PROMPT_SEND_BUTTON_SELECTORS) {
@@ -4636,13 +4679,6 @@ export class AISearcher {
           if (hasAnySendCandidate) {
             // 发送按钮已出现但仍禁用，说明上传/上下文尚未就绪。
             return false;
-          }
-
-          try {
-            await input.press("Enter", { timeout: 1000 });
-            return true;
-          } catch {
-            // ignore
           }
         } catch {
           continue;
@@ -4988,7 +5024,7 @@ export class AISearcher {
     while (Date.now() - start < maxWaitMs) {
       if (!this.page) return false;
       try {
-        const uploading = (await this.page.evaluate(`
+        const status = (await this.page.evaluate(`
           (() => {
             function isVisible(element) {
               if (!element || !element.getBoundingClientRect) return false;
@@ -4996,6 +5032,23 @@ export class AISearcher {
               if (style.visibility === "hidden" || style.display === "none") return false;
               const rect = element.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0;
+            }
+
+            // 正向完成信号：Send 按钮可见 = 上传已就绪
+            const sendBtns = Array.from(document.querySelectorAll("button"));
+            for (const btn of sendBtns) {
+              const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+              if ((label === "send" || label === "发送") && isVisible(btn)) {
+                return "done";
+              }
+            }
+
+            // 正向完成信号：Dismiss 按钮可见 = 附件已就绪
+            for (const btn of sendBtns) {
+              const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+              if ((label === "dismiss" || label.includes("移除")) && isVisible(btn)) {
+                return "done";
+              }
             }
 
             const progressBars = Array.from(
@@ -5009,20 +5062,28 @@ export class AISearcher {
                 aria.includes("uploading") ||
                 aria.includes("upload")
               ) {
-                return true;
+                return "uploading";
               }
             }
 
             const text = (document.body?.innerText || "").toLowerCase();
-            return (
+            if (
               text.includes("正在上传文件") ||
               text.includes("正在上传") ||
               text.includes("uploading file")
-            );
-          })()
-        `)) as boolean;
+            ) {
+              return "uploading";
+            }
 
-        if (!uploading) {
+            return "idle";
+          })()
+        `)) as string;
+
+        if (status === "done") {
+          return true;
+        }
+
+        if (status !== "uploading") {
           stableIdleMs += 250;
           if (stableIdleMs >= 1200) {
             return true;
@@ -5172,6 +5233,245 @@ export class AISearcher {
     return false;
   }
 
+  /**
+   * 通过 Clipboard API 写入图片 + Ctrl+V 粘贴（最快速可靠的方式）
+   *
+   * 原理：使用 navigator.clipboard.write() 将图片写入浏览器内部剪贴板，
+   * 然后通过 keyboard.press('Control+V') 触发原生 paste 事件。
+   * 这等效于用户手动复制图片后在输入框粘贴，完全不依赖 UI 按钮。
+   *
+   * 前提：browser context 创建时需要授予 clipboard-read + clipboard-write 权限。
+   */
+  private async tryUploadViaClipboardAPI(
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    try {
+      const imageBuffer = fs.readFileSync(imagePath);
+      const base64Data = imageBuffer.toString("base64");
+      const ext = path.extname(imagePath).toLowerCase();
+      const mimeType =
+        ext === ".png" ? "image/png"
+        : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+        : ext === ".webp" ? "image/webp"
+        : ext === ".gif" ? "image/gif"
+        : "image/png";
+
+      // 1. 写入浏览器剪贴板
+      const writeResult = await this.page.evaluate(
+        `(async () => {
+          try {
+            const base64 = "${base64Data}";
+            const mime = "${mimeType}";
+            const binaryStr = atob(base64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+              bytes[i] = binaryStr.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: mime });
+            await navigator.clipboard.write([
+              new ClipboardItem({ [mime]: blob })
+            ]);
+            return true;
+          } catch (e) {
+            return false;
+          }
+        })()`
+      );
+
+      if (!writeResult) {
+        console.error("Clipboard API 写入失败");
+        return false;
+      }
+
+      // 2. 聚焦输入区域
+      const inputFocusSelectors = [
+        'div[data-subtree="aimc"] textarea',
+        "textarea",
+        '[role="textbox"]',
+        '[contenteditable="true"]',
+      ];
+
+      let focused = false;
+      for (const selector of inputFocusSelectors) {
+        try {
+          const el = await this.page.$(selector);
+          if (el && (await el.isVisible())) {
+            await el.click();
+            focused = true;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      if (!focused) {
+        console.error("Clipboard API 粘贴: 未找到可聚焦的输入区域");
+        return false;
+      }
+
+      // 3. Ctrl+V 粘贴
+      await this.page.keyboard.press("Control+KeyV");
+
+      // 4. 等待附件出现
+      await this.page.waitForTimeout(400);
+
+      if (
+        await this.waitForImageAttachmentReady(
+          imagePath,
+          waitProfile.attachmentReadyMs
+        )
+      ) {
+        await this.waitForUploadProgressDone(waitProfile.uploadProgressMs);
+        console.error("Clipboard API 粘贴成功: 附件就绪");
+        return true;
+      }
+
+      console.error("Clipboard API 粘贴: 未检测到附件就绪");
+      return false;
+    } catch (e) {
+      console.error(`Clipboard API 粘贴异常: ${e}`);
+      return false;
+    }
+  }
+
+  private async tryUploadViaClipboardPaste(
+    imagePath: string,
+    waitProfile: ImageUploadWaitProfile
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    try {
+      // 大文件跳过粘贴方式（base64 传输开销大）
+      const fileSizeBytes = fs.statSync(imagePath).size;
+      if (fileSizeBytes > 15 * 1024 * 1024) {
+        console.error(`剪贴板粘贴: 文件过大 (${(fileSizeBytes / 1024 / 1024).toFixed(1)}MB)，跳过`);
+        return false;
+      }
+
+      const imageBuffer = fs.readFileSync(imagePath);
+      const base64Data = imageBuffer.toString("base64");
+      const ext = path.extname(imagePath).toLowerCase();
+      const mimeType =
+        ext === ".png" ? "image/png"
+        : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+        : ext === ".webp" ? "image/webp"
+        : ext === ".gif" ? "image/gif"
+        : ext === ".bmp" ? "image/bmp"
+        : ext === ".heic" ? "image/heic"
+        : ext === ".heif" ? "image/heif"
+        : ext === ".avif" ? "image/avif"
+        : "image/png";
+      const fileName = path.basename(imagePath);
+
+      // 聚焦输入区域
+      const inputFocusSelectors = [
+        'div[data-subtree="aimc"] textarea',
+        'div[data-subtree="aimc"] [role="textbox"]',
+        'div[data-subtree="aimc"] [contenteditable="true"]',
+        "textarea",
+        '[role="textbox"]',
+        '[contenteditable="true"]',
+      ];
+
+      let focused = false;
+      for (const selector of inputFocusSelectors) {
+        try {
+          const el = await this.page.$(selector);
+          if (el && (await el.isVisible())) {
+            await el.click();
+            focused = true;
+            console.error(`剪贴板粘贴: 已聚焦输入区域 (${selector})`);
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      if (!focused) {
+        console.error("剪贴板粘贴: 未找到可聚焦的输入区域");
+        return false;
+      }
+
+      await this.page.waitForTimeout(200);
+
+      // 通过合成 paste 事件粘贴图片
+      const escapedBase64 = base64Data.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const escapedMimeType = mimeType.replace(/'/g, "\\'");
+      const escapedFileName = fileName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const pasted = (await this.page.evaluate(`
+        (() => {
+          try {
+            const base64Data = '${escapedBase64}';
+            const mimeType = '${escapedMimeType}';
+            const fileName = '${escapedFileName}';
+            const binaryStr = atob(base64Data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+              bytes[i] = binaryStr.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: mimeType });
+            const file = new File([blob], fileName, {
+              type: mimeType,
+              lastModified: Date.now(),
+            });
+
+            const dt = new DataTransfer();
+            dt.items.add(file);
+
+            const pasteEvent = new ClipboardEvent("paste", {
+              bubbles: true,
+              cancelable: true,
+            });
+            Object.defineProperty(pasteEvent, "clipboardData", {
+              value: dt,
+              writable: false,
+              configurable: true,
+            });
+
+            const target =
+              document.activeElement ||
+              document.querySelector("textarea") ||
+              document.body;
+            return target.dispatchEvent(pasteEvent);
+          } catch (e) {
+            return false;
+          }
+        })()
+      `)) as boolean;
+      console.error(`剪贴板粘贴: dispatchEvent 结果=${pasted}`);
+
+      if (!pasted) {
+        return false;
+      }
+
+      // 等待粘贴事件被处理
+      await this.page.waitForTimeout(600);
+
+      // 检测附件是否出现
+      if (
+        await this.waitForImageAttachmentReady(
+          imagePath,
+          waitProfile.attachmentReadyMs
+        )
+      ) {
+        await this.waitForUploadProgressDone(waitProfile.uploadProgressMs);
+        console.error("剪贴板粘贴成功: 附件就绪");
+        return true;
+      }
+
+      console.error("剪贴板粘贴: 未检测到附件就绪");
+      return false;
+    } catch (e) {
+      console.error(`剪贴板粘贴异常: ${e}`);
+      return false;
+    }
+  }
+
   private async uploadImageAttachment(imagePath: string): Promise<boolean> {
     if (!this.page) return false;
 
@@ -5191,6 +5491,24 @@ export class AISearcher {
       }
       if (attempt > 0) {
         await this.page.waitForTimeout(500);
+      }
+
+      // 最优先：Clipboard API + Ctrl+V（最快，无 UI 依赖）
+      if (await this.tryUploadViaClipboardAPI(imagePath, waitProfile)) {
+        console.error(
+          `通过 Clipboard API 粘贴上传图片（elapsed=${Date.now() - startMs}ms）`
+        );
+        if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
+        return true;
+      }
+
+      // 备选：合成 paste 事件粘贴
+      if (await this.tryUploadViaClipboardPaste(imagePath, waitProfile)) {
+        console.error(
+          `通过剪贴板粘贴上传图片（elapsed=${Date.now() - startMs}ms）`
+        );
+        if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
+        return true;
       }
 
       if (await this.trySetImageInputFiles(imagePath, waitProfile)) {
@@ -5232,7 +5550,11 @@ export class AISearcher {
     );
   }
 
-  private isPlaceholderImageAnswer(answer: string, baselineAnswer: string): boolean {
+  private isPlaceholderImageAnswer(
+    answer: string,
+    baselineAnswer: string,
+    aiContainerLength: number = -1
+  ): boolean {
     const trimmed = answer.trim();
     if (!trimmed) return true;
 
@@ -5241,7 +5563,20 @@ export class AISearcher {
       return true;
     }
 
-    if (trimmed.length <= 80 && this.isDefaultGreetingAnswer(trimmed)) {
+    if (this.isDefaultGreetingAnswer(trimmed)) {
+      return true;
+    }
+
+    // 长文本时检查开头部分是否为欢迎语/推荐卡片（fallback 抓取了页面 body 文本的典型特征）
+    if (trimmed.length > 80) {
+      const head = trimmed.slice(0, 400);
+      if (this.isDefaultGreetingAnswer(head)) {
+        return true;
+      }
+    }
+
+    // 如果调用方明确传入了 AI 容器长度且为 0，而 fallback 文本很长，视为占位
+    if (aiContainerLength === 0 && trimmed.length > 200) {
       return true;
     }
 
@@ -5359,13 +5694,27 @@ export class AISearcher {
       } catch {
         return false;
       }
-      const extracted = await this.extractAiAnswer(page);
-      if (
-        extracted.success &&
-        !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer)
-      ) {
-        console.error(`检测到图片回答开始生成（第 ${i + 1} 秒）`);
-        return true;
+
+      // 优先检查 AI 容器是否有内容（避免 fallback 到 body text 导致误报）
+      try {
+        const aiContainerLen = (await page.evaluate(`(() => {
+          const containers = document.querySelectorAll('div[data-subtree="aimc"]');
+          let total = 0;
+          containers.forEach(c => { total += (c.innerText || '').trim().length; });
+          return total;
+        })()`)) as number;
+        if (aiContainerLen > 0) {
+          const extracted = await this.extractAiAnswer(page);
+          if (
+            extracted.success &&
+            !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer, aiContainerLen)
+          ) {
+            console.error(`检测到图片回答开始生成（第 ${i + 1} 秒），AI容器长度: ${aiContainerLen}`);
+            return true;
+          }
+        }
+      } catch {
+        // ignore evaluation errors
       }
 
       if (await this.checkLoadingIndicators(page)) {
@@ -5407,8 +5756,7 @@ export class AISearcher {
   ): Promise<boolean> {
     if (!this.page) return false;
 
-    await this.waitForPromptInputReady(5000);
-    let hasSubmitted = false;
+    await this.waitForPromptInputReady(2000);
 
     let submitted = await this.submitImagePromptDirect(prompt);
     if (!submitted) {
@@ -5419,42 +5767,30 @@ export class AISearcher {
         return false;
       }
     }
-    hasSubmitted = true;
 
     if (!this.page) return false;
-    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 6)) {
+    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 3)) {
       return true;
     }
 
+    // Enter 已经提交成功的情况下，即使没检测到生成迹象也继续（可能检测太快还没开始）
     if (!this.page) return false;
-    console.error("首次提交后未检测到生成迹象，尝试二次主输入提交...");
+    console.error("首次提交后未立即检测到生成迹象，尝试二次提交...");
     if (!(await this.submitImagePromptDirect(prompt))) {
-      console.error("二次直连提问框提交失败，尝试主输入框再次提交...");
       if (!(await this.submitPrompt(prompt))) {
-        await this.debugPromptControls("二次提交失败");
-        if (hasSubmitted) {
-          console.error("提示词已提交，但未检测到二次提交入口，继续后续提取流程");
-          return true;
-        }
-        return false;
+        // 首次已提交，继续后续提取流程
+        console.error("二次提交入口不可用（可能首次已成功），继续后续提取流程");
+        return true;
       }
     }
-    hasSubmitted = true;
 
     if (!this.page) return false;
-    await this.page.waitForTimeout(600);
-    if (!this.page) return false;
-    await this.waitForAiContent(this.page);
-    if (!this.page) return false;
-    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 5)) {
+    if (await this.waitForImageGenerationStart(this.page, baselineAnswer, 3)) {
       return true;
     }
 
-    if (hasSubmitted) {
-      console.error("提示词已提交，但短时间内未检测到生成迹象，继续后续提取流程");
-      return true;
-    }
-    return false;
+    console.error("提示词已提交，继续后续提取流程");
+    return true;
   }
 
   private async waitForMeaningfulImageAnswer(
@@ -5472,7 +5808,7 @@ export class AISearcher {
       const extracted = await this.extractAiAnswer(page);
       if (
         extracted.success &&
-        !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer)
+        !this.isPlaceholderImageAnswer(extracted.aiAnswer, baselineAnswer, extracted.aiContainerLength ?? -1)
       ) {
         console.error(
           `检测到有效图片回答（第 ${i + 1} 秒），长度: ${extracted.aiAnswer.length}`
@@ -5509,6 +5845,64 @@ export class AISearcher {
     }
 
     return content;
+  }
+
+  /**
+   * 去除 extractAiAnswer 附加的 "### 生成图片" 图片 Markdown 尾部，
+   * 只保留纯文本内容，用于增量对比时避免因图片 URL 变化导致 includes() 失配。
+   */
+  private stripImageSection(text: string): string {
+    const marker = "\n### 生成图片\n";
+    const idx = text.lastIndexOf(marker);
+    if (idx === -1) return text;
+    return text.slice(0, idx).trimEnd();
+  }
+
+  /**
+   * 从当前图片区段中移除上次已返回的图片 URL，只保留新增图片。
+   * 用于追问模式增量提取，避免页面累积的历史图片重复展示。
+   */
+  private computeIncrementalImageSection(currentImageSection: string): string {
+    if (!currentImageSection.trim() || !this.lastAiAnswer) {
+      return currentImageSection;
+    }
+    const oldImageSection = this.lastAiAnswer.slice(
+      (this.lastAiAnswerTextOnly || "").length
+    );
+    if (!oldImageSection.trim()) {
+      return currentImageSection;
+    }
+
+    // 提取旧图片 URL 集合
+    const urlPattern = /!\[.*?\]\(<(.*?)>\)/g;
+    const oldUrls = new Set<string>();
+    let match;
+    while ((match = urlPattern.exec(oldImageSection)) !== null) {
+      if (match[1]) oldUrls.add(match[1]);
+    }
+    if (oldUrls.size === 0) {
+      return currentImageSection;
+    }
+
+    // 过滤：只保留新图片行
+    const linePattern = /!\[.*?\]\(<.*?>\)/g;
+    const newLines: string[] = [];
+    while ((match = linePattern.exec(currentImageSection)) !== null) {
+      const urlMatch = match[0].match(/\(<(.*?)>\)/);
+      const url = urlMatch?.[1];
+      if (url && !oldUrls.has(url)) {
+        newLines.push(match[0]);
+      }
+    }
+
+    if (newLines.length === 0) {
+      return "";
+    }
+    // 重新编号
+    const renumbered = newLines.map(
+      (line, i) => line.replace(/!\[AI 生成图片 \d+\]/, `![AI 生成图片 ${i + 1}]`)
+    );
+    return "\n\n### 生成图片\n\n" + renumbered.join("\n\n");
   }
 
   /**
@@ -5576,6 +5970,7 @@ export class AISearcher {
         );
         if (nodriverResult.success) {
           this.lastAiAnswer = nodriverResult.aiAnswer;
+          this.lastAiAnswerTextOnly = this.stripImageSection(nodriverResult.aiAnswer);
           this.lastActivityTime = Date.now();
           return nodriverResult;
         }
@@ -5600,6 +5995,9 @@ export class AISearcher {
         result.error = "无法启动浏览器";
         return result;
       }
+
+      // 复用会话时，检查是否有新的登录状态需要加载
+      await this.reloadStorageStateIfNeeded();
 
       if (!this.page) {
         result.error = "页面未初始化";
@@ -5705,7 +6103,7 @@ export class AISearcher {
           result.error = "图片搜索过程中页面已关闭（可能超时）。";
           return result;
         }
-        await this.page.waitForTimeout(1000);
+        await this.page.waitForTimeout(300);
         if (this.page) {
           await this.waitForAiContent(this.page);
         }
@@ -5716,7 +6114,7 @@ export class AISearcher {
         result.error = "搜索过程中页面已关闭（可能超时）。";
         return result;
       }
-      const streamWaitSeconds = hasImageInput ? 22 : 10;
+      const streamWaitSeconds = hasImageInput ? 22 : 16;
       await this.waitForStreamingComplete(this.page, streamWaitSeconds);
 
       // 短暂等待来源链接渲染（最佳努力，不阻塞过久）
@@ -5804,7 +6202,7 @@ export class AISearcher {
 
       if (
         hasImageInput &&
-        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer)
+        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer, extractedResult.aiContainerLength ?? -1)
       ) {
         console.error("检测到图片模式仍为欢迎语/占位内容，继续等待真实回答...");
         const meaningfulResult = await this.waitForMeaningfulImageAnswer(
@@ -5819,17 +6217,18 @@ export class AISearcher {
       if (hasImageInput) {
         const placeholderNow = this.isPlaceholderImageAnswer(
           extractedResult.aiAnswer,
-          baselineAiAnswer
+          baselineAiAnswer,
+          extractedResult.aiContainerLength ?? -1
         );
         console.error(
-          `图片占位重试检查: absoluteImagePath=${absoluteImagePath || "(none)"}, placeholder=${placeholderNow}, baselineLen=${baselineAiAnswer.length}, extractedLen=${extractedResult.aiAnswer.length}`
+          `图片占位重试检查: absoluteImagePath=${absoluteImagePath || "(none)"}, placeholder=${placeholderNow}, baselineLen=${baselineAiAnswer.length}, extractedLen=${extractedResult.aiAnswer.length}, aiContainerLen=${extractedResult.aiContainerLength ?? -1}`
         );
       }
 
       if (
         hasImageInput &&
         absoluteImagePath &&
-        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer)
+        this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer, extractedResult.aiContainerLength ?? -1)
       ) {
         console.error("图片结果仍为占位内容，执行一次自动重试（重新上传并提交）...");
         try {
@@ -5858,7 +6257,7 @@ export class AISearcher {
                 const retryExtracted = await this.extractAiAnswer(this.page);
                 if (
                   retryExtracted.success &&
-                  !this.isPlaceholderImageAnswer(retryExtracted.aiAnswer, retryBaselineAnswer)
+                  !this.isPlaceholderImageAnswer(retryExtracted.aiAnswer, retryBaselineAnswer, retryExtracted.aiContainerLength ?? -1)
                 ) {
                   extractedResult = retryExtracted;
                   console.error(
@@ -5885,7 +6284,7 @@ export class AISearcher {
 
       if (
         hasImageInput &&
-        this.isPlaceholderImageAnswer(result.aiAnswer, baselineAiAnswer)
+        this.isPlaceholderImageAnswer(result.aiAnswer, baselineAiAnswer, extractedResult.aiContainerLength ?? -1)
       ) {
         result.success = false;
         result.error = "未获取到图片分析结果（页面仍停留在欢迎语），请重试。";
@@ -5901,6 +6300,8 @@ export class AISearcher {
 
       // 保存回答用于增量提取
       this.lastAiAnswer = result.aiAnswer;
+      this.lastAiAnswerTextOnly = this.stripImageSection(result.aiAnswer);
+      this.lastWasImageCreation = false;
       this.lastActivityTime = Date.now();
 
       // 保存状态
@@ -5914,6 +6315,679 @@ export class AISearcher {
       result.error = error instanceof Error ? error.message : String(error);
       console.error(`搜索失败: ${result.error}`);
       return result;
+    }
+  }
+
+  /**
+   * 画图模式：使用 Google AI Mode 的 "Create images" 功能生成图片。
+   * 流程：导航到 AI Mode → 点击 "Create images" 按钮 → 输入 prompt → 等待图片生成 → 提取结果
+   */
+  async searchWithImageCreation(query: string, language: string = "zh-CN"): Promise<SearchResult> {
+    const normalizedQuery = query.trim();
+    console.error("=".repeat(60));
+    console.error(`[画图模式] 开始: query='${normalizedQuery}', language=${language}`);
+
+    const result: SearchResult = {
+      success: false,
+      query: normalizedQuery,
+      aiAnswer: "",
+      sources: [],
+      error: "",
+    };
+
+    try {
+      // 确保会话
+      if (!(await this.ensureSession(language))) {
+        result.error = "无法启动浏览器";
+        return result;
+      }
+
+      // 复用会话时，检查是否有新的登录状态需要加载
+      await this.reloadStorageStateIfNeeded();
+
+      if (!this.page) {
+        result.error = "页面未初始化";
+        return result;
+      }
+
+      // 导航到 AI Mode 首页（强制英文 locale，因为 Create images 功能仅在英文界面下可用）
+      const url = this.buildAiModeUrl("en");
+      console.error(`[画图模式] 导航到（强制英文）: ${url}`);
+      await this.page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: this.timeout * 1000,
+      });
+      await this.waitForAiContent(this.page);
+
+      // 检测验证码
+      const pageContent = (await this.page.evaluate("document.body.innerText")) as string;
+      if (this.isCaptchaPage(pageContent)) {
+        console.error("[画图模式] 检测到验证码页面");
+        return await this.handleCaptcha(url, normalizedQuery);
+      }
+
+      // 尝试找到并点击 "Create images" 按钮
+      const activated = await this.activateImageCreationMode();
+      if (!activated) {
+        console.error("[画图模式] 未能激活画图模式，回退到普通搜索");
+        return this.search(normalizedQuery, language);
+      }
+
+      // 找到图片描述输入框并输入 prompt
+      const submitted = await this.submitImageCreationPrompt(normalizedQuery);
+      if (!submitted) {
+        console.error("[画图模式] 未能提交画图 prompt，回退到普通搜索");
+        return this.search(normalizedQuery, language);
+      }
+
+      // 等待图片生成（比普通搜索等待更久，图片生成通常需要更多时间）
+      console.error("[画图模式] 等待图片生成...");
+      await this.waitForStreamingComplete(this.page, 30);
+
+      // 额外等待确保图片加载完成
+      await this.page.waitForTimeout(2000);
+
+      // 提取结果
+      const extractedResult = await this.extractAiAnswer(this.page);
+      result.aiAnswer = extractedResult.aiAnswer;
+      result.sources = extractedResult.sources;
+      result.success = result.aiAnswer.length > 0;
+
+      // 保存状态
+      this.lastAiAnswer = result.aiAnswer;
+      this.lastAiAnswerTextOnly = this.stripImageSection(result.aiAnswer);
+      this.lastWasImageCreation = true;
+      this.lastActivityTime = Date.now();
+      await this.saveStorageState();
+
+      console.error(`[画图模式] 完成: success=${result.success}, answer长度=${result.aiAnswer.length}`);
+      return result;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      console.error(`[画图模式] 失败: ${result.error}`);
+      return result;
+    }
+  }
+
+  /**
+   * 在 AI Mode 页面上查找并点击 "Create images" 按钮/标签。
+   * "Create images" 按钮位于 "More input options" 弹出菜单内，
+   * 需要先点击该菜单按钮展开后才能访问。
+   */
+  private async activateImageCreationMode(): Promise<boolean> {
+    if (!this.page) return false;
+
+    console.error("[画图模式] 查找 Create images 按钮...");
+
+    const createImageTexts = [
+      "create images", "create image",
+      "创建图片", "生成图片", "创建图像", "制作图片",
+      "画像を作成", "이미지 만들기",
+    ];
+
+    // 策略1（主要路径）：点击 "More input options" 弹出菜单，在菜单内找 "Create images"
+    const moreOptionsOpened = await this.openMoreInputOptionsMenu();
+    if (moreOptionsOpened) {
+      // 等待弹出菜单渲染（Google 的菜单可能有动画）
+      await this.page.waitForTimeout(800);
+
+      // 搜索弹出容器：menu / dialog / listbox 等
+      const popupSelectors = '[role="menu"], [role="dialog"], [role="listbox"], [data-menu-id]';
+
+      // 策略1a: 在弹出容器内通过 getByText 宽松匹配
+      for (const text of createImageTexts) {
+        try {
+          const locator = this.page.locator(popupSelectors).getByText(text, { exact: false }).first();
+          if (await locator.isVisible({ timeout: 1500 })) {
+            console.error(`[画图模式] 在弹出容器中找到: "${text}"`);
+            await locator.click();
+            await this.page.waitForTimeout(1000);
+            console.error("[画图模式] 已点击 Create images 按钮");
+            return true;
+          }
+        } catch {
+          // continue
+        }
+      }
+
+      // 策略1b: 在弹出容器内搜索 button / menuitem
+      for (const text of createImageTexts) {
+        try {
+          const locator = this.page.locator(
+            `${popupSelectors} button:has-text("${text}"), ` +
+            `${popupSelectors} [role="menuitem"]:has-text("${text}"), ` +
+            `${popupSelectors} [role="button"]:has-text("${text}")`
+          ).first();
+          if (await locator.isVisible({ timeout: 1000 })) {
+            console.error(`[画图模式] 在弹出容器中找到按钮: "${text}"`);
+            await locator.click();
+            await this.page.waitForTimeout(1000);
+            return true;
+          }
+        } catch {
+          // continue
+        }
+      }
+
+      // 策略1c: JavaScript 宽泛遍历弹出容器
+      const menuClicked = await this.page.evaluate(`
+        (() => {
+          const targets = ${JSON.stringify(createImageTexts)};
+          const containers = document.querySelectorAll('${popupSelectors}');
+          const searchIn = containers.length > 0 ? containers : [document.body];
+          for (const container of searchIn) {
+            const elements = container.querySelectorAll('button, [role="menuitem"], [role="button"], [role="option"], a, span, div');
+            for (const el of elements) {
+              const text = (el.textContent || '').trim().toLowerCase();
+              const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+              for (const target of targets) {
+                if (text === target || aria.includes(target)) {
+                  el.click();
+                  return { found: true, tag: el.tagName, text: text.slice(0, 80), aria: aria.slice(0, 80) };
+                }
+              }
+            }
+          }
+          return { found: false };
+        })()
+      `) as { found: boolean; tag?: string; text?: string; aria?: string };
+
+      if (menuClicked.found) {
+        console.error(`[画图模式] JS点击成功: ${menuClicked.tag} text="${menuClicked.text}" aria="${menuClicked.aria}"`);
+        await this.page.waitForTimeout(1000);
+        return true;
+      }
+
+      console.error("[画图模式] 菜单已展开但未找到 Create images 按钮");
+    }
+
+    // 策略2（兜底）：直接在整个页面上查找
+    console.error("[画图模式] 兜底：直接在页面上查找 Create images...");
+    for (const text of createImageTexts) {
+      try {
+        const locator = this.page.getByText(text, { exact: false }).first();
+        if (await locator.isVisible({ timeout: 1000 })) {
+          console.error(`[画图模式] 页面上找到: "${text}"`);
+          await locator.click();
+          await this.page.waitForTimeout(1000);
+          return true;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    // 调试：截图 + 列出候选元素
+    console.error("[画图模式] 未找到 Create images 按钮，截图调试...");
+    try {
+      const screenshotPath = path.join(AISearcher.BROWSER_DATA_ROOT, "debug_create_images.png");
+      await this.page.screenshot({ path: screenshotPath, fullPage: false });
+      console.error(`[画图模式] 调试截图已保存: ${screenshotPath}`);
+    } catch (e) {
+      console.error(`[画图模式] 截图失败: ${e}`);
+    }
+
+    const debugInfo = await this.page.evaluate(`
+      (() => {
+        const candidates = [];
+        const elements = document.querySelectorAll(
+          'button, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [data-chip-id]'
+        );
+        for (const el of elements) {
+          const text = (el.textContent || '').trim();
+          if (text.length > 0 && text.length < 100) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              candidates.push({
+                tag: el.tagName,
+                text: text.slice(0, 80),
+                ariaLabel: el.getAttribute('aria-label') || '',
+                role: el.getAttribute('role') || '',
+              });
+            }
+          }
+        }
+        return candidates;
+      })()
+    `) as Array<{ tag: string; text: string; ariaLabel: string; role: string }>;
+
+    console.error("[画图模式] 页面候选元素:");
+    for (const item of debugInfo) {
+      console.error(
+        `  [候选] <${item.tag}> role="${item.role}" aria="${item.ariaLabel}" text="${item.text}"`
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * 点击 "More input options" 按钮以展开弹出菜单
+   */
+  private async openMoreInputOptionsMenu(): Promise<boolean> {
+    if (!this.page) return false;
+
+    const moreOptionsLabels = [
+      "More input options",
+      "更多输入选项",
+      "更多输入项",
+      "その他の入力オプション",
+    ];
+
+    // 通过 aria-label 查找
+    for (const label of moreOptionsLabels) {
+      try {
+        const locator = this.page.locator(`button[aria-label="${label}"]`).first();
+        if (await locator.isVisible({ timeout: 2000 })) {
+          console.error(`[画图模式] 找到 "${label}" 按钮，点击展开菜单`);
+          await locator.click();
+          await this.page.waitForTimeout(500);
+          return true;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    // 通过 getByRole 查找
+    for (const label of moreOptionsLabels) {
+      try {
+        const locator = this.page.getByRole("button", { name: label }).first();
+        if (await locator.isVisible({ timeout: 1000 })) {
+          console.error(`[画图模式] 找到 "${label}" 按钮（getByRole），点击展开菜单`);
+          await locator.click();
+          await this.page.waitForTimeout(500);
+          return true;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    // JavaScript 兜底：查找输入框附近的按钮
+    const jsClicked = await this.page.evaluate(`
+      (() => {
+        // 查找包含 "more" 或 "更多" 的按钮（aria-label 或 title）
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+          const title = (btn.getAttribute('title') || '').toLowerCase();
+          if (aria.includes('more input') || aria.includes('更多输入') || title.includes('more input') || title.includes('更多输入')) {
+            btn.click();
+            return { found: true, aria: aria };
+          }
+        }
+        return { found: false };
+      })()
+    `) as { found: boolean; aria?: string };
+
+    if (jsClicked.found) {
+      console.error(`[画图模式] JS点击 More input options 成功: "${jsClicked.aria}"`);
+      await this.page.waitForTimeout(500);
+      return true;
+    }
+
+    console.error("[画图模式] 未找到 More input options 按钮");
+    return false;
+  }
+
+  /**
+   * 在画图模式的输入框中输入 prompt 并提交
+   */
+  private async submitImageCreationPrompt(prompt: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    console.error(`[画图模式] 查找图片描述输入框并提交: "${prompt}"`);
+
+    // 候选选择器：画图模式的输入框可能有不同的 placeholder
+    const inputSelectors = [
+      'textarea[placeholder*="Describe"]',
+      'textarea[placeholder*="describe"]',
+      'textarea[placeholder*="描述"]',
+      'textarea[placeholder*="image"]',
+      'textarea[placeholder*="图片"]',
+      'textarea[placeholder*="画"]',
+      'input[placeholder*="Describe"]',
+      'input[placeholder*="describe"]',
+      'input[placeholder*="描述"]',
+      'div[contenteditable="true"][aria-label*="Describe"]',
+      'div[contenteditable="true"][aria-label*="image"]',
+    ];
+
+    // 策略1：通过 placeholder/aria-label 查找图片输入框
+    for (const selector of inputSelectors) {
+      try {
+        const element = await this.page.$(selector);
+        if (element && (await element.isVisible())) {
+          console.error(`[画图模式] 找到输入框: ${selector}`);
+          await element.click();
+          await this.page.waitForTimeout(300);
+          await element.fill(prompt);
+          await this.page.waitForTimeout(300);
+          await element.press("Enter");
+          console.error("[画图模式] 已提交 prompt");
+          return true;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    // 策略2：使用通用的追问输入框选择器（Create images 模式可能复用了同一个输入框）
+    console.error("[画图模式] 尝试使用通用输入框...");
+    const input = await this.findFollowUpInput();
+    if (input) {
+      try {
+        await input.click();
+        await this.page.waitForTimeout(300);
+        await input.fill(prompt);
+        await this.page.waitForTimeout(300);
+        await input.press("Enter");
+        console.error("[画图模式] 通过通用输入框提交 prompt");
+        return true;
+      } catch (error) {
+        console.error(`[画图模式] 通用输入框提交失败: ${error}`);
+      }
+    }
+
+    // 策略3：JavaScript 查找并提交
+    console.error("[画图模式] 尝试 JavaScript 查找输入框...");
+    const jsResult = await this.page.evaluate(`
+      (() => {
+        // 查找所有 textarea 和 contenteditable
+        const inputs = [
+          ...document.querySelectorAll('textarea'),
+          ...document.querySelectorAll('input[type="text"]'),
+          ...document.querySelectorAll('div[contenteditable="true"]'),
+        ];
+        const candidates = [];
+        for (const input of inputs) {
+          const rect = input.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            candidates.push({
+              tag: input.tagName,
+              placeholder: input.getAttribute('placeholder') || '',
+              ariaLabel: input.getAttribute('aria-label') || '',
+              name: input.getAttribute('name') || '',
+              rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+            });
+          }
+        }
+        return candidates;
+      })()
+    `) as Array<{ tag: string; placeholder: string; ariaLabel: string; name: string; rect: { x: number; y: number; w: number; h: number } }>;
+
+    console.error("[画图模式] 页面上可见的输入框:");
+    for (const item of jsResult) {
+      console.error(
+        `  [输入框] <${item.tag}> placeholder="${item.placeholder}" aria="${item.ariaLabel}" name="${item.name}" rect=${JSON.stringify(item.rect)}`
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * 在当前会话中继续对话并上传图片（追问+图片）。
+   * 与 continueConversation 相同保持在当前页面上下文，但额外在追问输入框旁上传图片附件。
+   */
+  async continueConversationWithImage(
+    query: string,
+    imagePath: string
+  ): Promise<SearchResult> {
+    const normalizedQuery = query.trim();
+    const absoluteImagePath = path.resolve(imagePath);
+    console.error(
+      `继续对话（带图片）: query='${normalizedQuery}', image=${absoluteImagePath}`
+    );
+
+    this.lastActivityTime = Date.now();
+
+    if (!this.hasActiveSession()) {
+      console.error("没有活跃会话，回退到新搜索（带图片）");
+      return this.search(normalizedQuery, "en-US", imagePath);
+    }
+
+    const result: SearchResult = {
+      success: false,
+      query: normalizedQuery,
+      aiAnswer: "",
+      sources: [],
+      error: "",
+    };
+
+    if (!normalizedQuery) {
+      result.error = "图片追问必须同时提供文本问题";
+      return result;
+    }
+
+    if (!fs.existsSync(absoluteImagePath)) {
+      result.error = `图片文件不存在: ${absoluteImagePath}`;
+      return result;
+    }
+
+    try {
+      if (!this.page) {
+        result.error = "页面未初始化";
+        return result;
+      }
+
+      // 记录提交前的页面内容长度，用于检测新内容
+      const preSubmitLength = (await this.page.evaluate(
+        "document.body.innerText.length"
+      )) as number;
+
+      // 提取当前页面回答作为基线（用于占位检测和增量提取）
+      const baselineResult = await this.extractAiAnswer(this.page);
+      const baselineAiAnswer = baselineResult.aiAnswer || "";
+
+      // 在当前追问页面上传图片
+      const uploaded = await this.uploadImageAttachment(absoluteImagePath);
+      if (!uploaded) {
+        console.error("追问上传图片失败，回退到新搜索（带图片）");
+        return this.search(normalizedQuery, "en-US", imagePath);
+      }
+      console.error(`追问图片上传成功: ${absoluteImagePath}`);
+
+      if (!this.page) {
+        result.error = "图片上传后页面已关闭";
+        return result;
+      }
+
+      // 提交提示词（使用与图片搜索相同的提交逻辑）
+      const submitted = await this.submitImagePromptWithFallback(
+        normalizedQuery,
+        baselineAiAnswer
+      );
+      if (!submitted) {
+        if (!this.page) {
+          result.error = "图片追问过程中页面已关闭";
+        } else {
+          result.error =
+            "图片已上传，但未能提交追问提示词（输入框或发送按钮不可用）";
+        }
+        return result;
+      }
+      console.error(`已提交图片追问提示词: ${normalizedQuery}`);
+
+      if (!this.page) {
+        result.error = "提交后页面已关闭";
+        return result;
+      }
+
+      // 等待页面内容变化
+      await this.page.waitForTimeout(300);
+      if (this.page) {
+        await this.waitForAiContent(this.page);
+      }
+
+      // 等待流式输出完成
+      if (!this.page) {
+        result.error = "等待过程中页面已关闭";
+        return result;
+      }
+      await this.waitForStreamingComplete(this.page, 22);
+
+      // 短暂等待来源链接渲染
+      if (this.page) {
+        try {
+          await this.page.waitForFunction(
+            `(() => {
+              function isGoogleHost(hostname) {
+                const host = (hostname || "").toLowerCase();
+                return host.includes('google.') || host.includes('gstatic.com') || host.includes('googleapis.com');
+              }
+              function normalizeLink(rawHref) {
+                if (!rawHref) return '';
+                try {
+                  const parsed = new URL(rawHref);
+                  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+                  if (isGoogleHost(parsed.hostname)) {
+                    const redirect = parsed.searchParams.get('url') || parsed.searchParams.get('q') || '';
+                    if (!redirect) return '';
+                    const target = new URL(redirect);
+                    if (target.protocol !== 'http:' && target.protocol !== 'https:') return '';
+                    if (isGoogleHost(target.hostname)) return '';
+                    return target.href;
+                  }
+                  return parsed.href;
+                } catch { return ''; }
+              }
+              const aiContainer = document.querySelector('div[data-subtree="aimc"]');
+              if (!aiContainer) return false;
+              const links = aiContainer.querySelectorAll('a[href]');
+              const seen = new Set();
+              let count = 0;
+              links.forEach(link => {
+                const href = normalizeLink(link.href);
+                if (href && !seen.has(href)) { seen.add(href); count++; }
+              });
+              return count >= 1;
+            })()`,
+            undefined,
+            { timeout: 400 }
+          );
+        } catch {
+          // 来源链接未及时渲染，继续提取
+        }
+      }
+
+      // 检查验证码
+      if (!this.page) {
+        result.error = "提取过程中页面已关闭";
+        return result;
+      }
+      const content = (await this.page.evaluate(
+        "document.body.innerText"
+      )) as string;
+      if (this.isCaptchaPage(content)) {
+        console.error("图片追问时检测到验证码！");
+        await this.close();
+        result.error = "需要验证，请重新搜索";
+        return result;
+      }
+
+      // 提取 AI 回答
+      let extractedResult = await this.extractAiAnswer(this.page);
+
+      // 检查是否为占位回答
+      if (
+        this.isPlaceholderImageAnswer(
+          extractedResult.aiAnswer,
+          baselineAiAnswer,
+          extractedResult.aiContainerLength ?? -1
+        )
+      ) {
+        console.error(
+          "图片追问占位重试检查: " +
+          `absoluteImagePath=${absoluteImagePath}, placeholder=true, ` +
+          `baselineLen=${baselineAiAnswer.length}, extractedLen=${extractedResult.aiAnswer.length}`
+        );
+        // 等待更长时间以获取真实回答
+        const meaningful = await this.waitForMeaningfulImageAnswer(
+          this.page,
+          baselineAiAnswer,
+          12
+        );
+        if (meaningful) {
+          extractedResult = meaningful;
+        }
+      } else {
+        console.error(
+          "图片追问占位重试检查: " +
+          `absoluteImagePath=${absoluteImagePath}, placeholder=false, ` +
+          `baselineLen=${baselineAiAnswer.length}, extractedLen=${extractedResult.aiAnswer.length}, ` +
+          `aiContainerLen=${extractedResult.aiContainerLength ?? -1}`
+        );
+      }
+
+      result.sources = extractedResult.sources;
+
+      // 增量提取：只返回新增内容
+      const fullPageAnswer = extractedResult.aiAnswer;
+      const fullTextOnly = this.stripImageSection(fullPageAnswer);
+      const imageSection = fullPageAnswer.slice(fullTextOnly.length);
+      const incrementalImageSection = this.computeIncrementalImageSection(imageSection);
+
+      console.error(
+        `图片追问增量提取: fullPageAnswer=${fullPageAnswer.length}, fullTextOnly=${fullTextOnly.length}, ` +
+        `imageSection=${imageSection.length}, incrementalImageSection=${incrementalImageSection.length}, lastAiAnswerTextOnly=${(this.lastAiAnswerTextOnly || "").length}`
+      );
+
+      if (extractedResult.success && this.lastAiAnswerTextOnly) {
+        if (fullTextOnly.includes(this.lastAiAnswerTextOnly)) {
+          const lastEndPos =
+            fullTextOnly.indexOf(this.lastAiAnswerTextOnly) +
+            this.lastAiAnswerTextOnly.length;
+          let newContent = fullTextOnly.slice(lastEndPos).trim();
+          if (newContent) {
+            newContent = this.removeUserQueryFromContent(newContent, normalizedQuery);
+            result.aiAnswer = (newContent + incrementalImageSection).trim();
+            console.error(
+              `图片追问增量提取: 原始长度=${fullPageAnswer.length}, 新增文本长度=${newContent.length}`
+            );
+          } else if (incrementalImageSection.trim()) {
+            result.aiAnswer = incrementalImageSection.trim();
+            console.error(
+              `图片追问增量提取: 文本无变化但有新图片，imageSection长度=${incrementalImageSection.length}`
+            );
+          } else {
+            // 页面上的回答与上次完全相同，说明 Google AI 未生成新回答
+            // 回退到新搜索，避免返回重复内容
+            console.error("图片追问增量提取未找到新内容，回退到新搜索避免返回重复回答");
+            return this.search(normalizedQuery, "en-US", imagePath);
+          }
+        } else {
+          console.error("图片追问增量提取: 未找到上一次回答，保留完整内容");
+          result.aiAnswer = fullPageAnswer;
+        }
+      } else {
+        result.aiAnswer = fullPageAnswer;
+      }
+
+      result.success = result.aiAnswer.length > 0;
+
+      // 更新记录
+      this.lastAiAnswer = fullPageAnswer;
+      this.lastAiAnswerTextOnly = this.stripImageSection(fullPageAnswer);
+      this.lastActivityTime = Date.now();
+
+      // 保存状态
+      await this.saveStorageState();
+
+      console.error(`图片追问完成: success=${result.success}`);
+      return result;
+    } catch (error) {
+      console.error(`图片追问失败: ${error}`);
+
+      // 回退到新搜索
+      try {
+        return this.search(normalizedQuery, "en-US", imagePath);
+      } catch {
+        await this.close();
+        result.error = `图片追问失败: ${error}`;
+        return result;
+      }
     }
   }
 
@@ -5947,6 +7021,11 @@ export class AISearcher {
       // 查找追问输入框
       const inputElement = await this.findFollowUpInput();
 
+      // 提交前记录当前页面内容长度，用于追问后检测新内容
+      const preSubmitLength = (await this.page.evaluate(
+        "document.body.innerText.length"
+      )) as number;
+
       if (inputElement) {
         await inputElement.click();
         await this.page.waitForTimeout(300);
@@ -5967,10 +7046,15 @@ export class AISearcher {
         }
       }
 
-      // 等待 AI 回答加载
-      await this.page.waitForTimeout(1000);
-      await this.waitForAiContent(this.page);
-      await this.waitForStreamingComplete(this.page, 10);
+      // 等待页面内容真正开始变化（新回答开始渲染），再做稳定性检测
+      // 画图模式追问需要更长等待（图片再生成通常需要 20-30s）
+      const followUpContentWaitMs = this.lastWasImageCreation ? 20000 : 8000;
+      const streamingWaitSeconds = this.lastWasImageCreation ? 26 : 10;
+      if (this.lastWasImageCreation) {
+        console.error("上一次是画图模式，使用加长等待时间");
+      }
+      await this.waitForFollowUpContentChange(this.page, preSubmitLength, followUpContentWaitMs);
+      await this.waitForStreamingComplete(this.page, streamingWaitSeconds);
 
       // 检查验证码
       const content = (await this.page.evaluate(
@@ -6006,20 +7090,40 @@ export class AISearcher {
       const fullPageAnswer = extractedResult.aiAnswer;
 
       // 增量提取：只返回新增内容
-      if (extractedResult.success && this.lastAiAnswer) {
-        if (fullPageAnswer.includes(this.lastAiAnswer)) {
+      // 使用去掉图片 Markdown 的纯文本进行对比，避免因图片 URL 变化导致 includes() 失配
+      const fullTextOnly = this.stripImageSection(fullPageAnswer);
+      const imageSection = fullPageAnswer.slice(fullTextOnly.length);
+
+      // 增量图片去重：从当前图片区段中移除上次已返回的图片 URL
+      const incrementalImageSection = this.computeIncrementalImageSection(imageSection);
+
+      console.error(
+        `增量提取准备: fullPageAnswer=${fullPageAnswer.length}, fullTextOnly=${fullTextOnly.length}, ` +
+        `imageSection=${imageSection.length}, incrementalImageSection=${incrementalImageSection.length}, lastAiAnswerTextOnly=${(this.lastAiAnswerTextOnly || "").length}`
+      );
+
+      if (extractedResult.success && this.lastAiAnswerTextOnly) {
+        if (fullTextOnly.includes(this.lastAiAnswerTextOnly)) {
           const lastEndPos =
-            fullPageAnswer.indexOf(this.lastAiAnswer) + this.lastAiAnswer.length;
-          let newContent = fullPageAnswer.slice(lastEndPos).trim();
+            fullTextOnly.indexOf(this.lastAiAnswerTextOnly) + this.lastAiAnswerTextOnly.length;
+          let newContent = fullTextOnly.slice(lastEndPos).trim();
           if (newContent) {
             newContent = this.removeUserQueryFromContent(newContent, query);
-            result.aiAnswer = newContent;
+            result.aiAnswer = (newContent + incrementalImageSection).trim();
             console.error(
-              `增量提取: 原始长度=${fullPageAnswer.length}, 新增长度=${newContent.length}`
+              `增量提取: 原始长度=${fullPageAnswer.length}, 新增文本长度=${newContent.length}`
+            );
+          } else if (incrementalImageSection.trim()) {
+            // 文本没有变化，但有新图片（画图追问场景：Google AI 只更新了图片，文本不变）
+            result.aiAnswer = incrementalImageSection.trim();
+            console.error(
+              `增量提取: 文本无变化但有新图片，imageSection长度=${incrementalImageSection.length}`
             );
           } else {
-            console.error("增量提取未找到新内容，保留完整回答");
-            result.aiAnswer = fullPageAnswer;
+            // 页面上的回答与上次完全相同，说明 Google AI 未生成新回答
+            // 回退到新搜索，避免返回重复内容
+            console.error("增量提取未找到新内容，回退到新搜索避免返回重复回答");
+            return this.search(query);
           }
         } else {
           console.error("增量提取: 未找到上一次回答，保留完整内容");
@@ -6033,6 +7137,7 @@ export class AISearcher {
 
       // 更新记录
       this.lastAiAnswer = fullPageAnswer;
+      this.lastAiAnswerTextOnly = this.stripImageSection(fullPageAnswer);
       this.lastActivityTime = Date.now();
 
       console.error(`追问完成: success=${result.success}`);
@@ -6059,6 +7164,8 @@ export class AISearcher {
 
     this.sessionActive = false;
     this.lastAiAnswer = "";
+    this.lastAiAnswerTextOnly = "";
+    this.lastWasImageCreation = false;
 
     if (this.page) {
       try {
@@ -6091,6 +7198,31 @@ export class AISearcher {
   }
 
   /**
+   * 打开浏览器让用户自由浏览和操作
+   * 用户关闭浏览器窗口后自动保存当前 cookie/认证状态
+   */
+  async openBrowser(): Promise<{ success: boolean; message: string }> {
+    console.error("启动浏览器自由浏览模式...");
+    await this.close();
+    try {
+      const nodriverResult = await this.runNodriverAuthFlow(NODRIVER_LOGIN_URL, true);
+      if (nodriverResult.success && nodriverResult.stateSaved) {
+        return {
+          success: true,
+          message: "浏览器已关闭，认证状态已更新保存。",
+        };
+      }
+      return {
+        success: nodriverResult.success,
+        message: nodriverResult.message || "浏览器已关闭。",
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return { success: false, message: `浏览器启动失败: ${errorMsg}` };
+    }
+  }
+
+  /**
    * 打开浏览器让用户登录 Google 账户
    * 用户完成登录后关闭浏览器，认证状态会被保存
    */
@@ -6100,133 +7232,19 @@ export class AISearcher {
     // 关闭现有会话
     await this.close();
 
-    if (this.shouldUseNodriverAuth()) {
-      console.error("优先使用 nodriver 执行登录流程...");
-      try {
-        const nodriverResult = await this.runNodriverAuthFlow(NODRIVER_LOGIN_URL);
-        if (nodriverResult.success && nodriverResult.stateSaved) {
-          return {
-            success: true,
-            message: "登录完成（nodriver）！认证状态已保存，现在可以正常使用搜索功能了。",
-          };
-        }
-        console.error(`nodriver 登录流程未成功，回退 Playwright: ${nodriverResult.message}`);
-      } catch (error) {
-        console.error(`nodriver 登录流程异常，回退 Playwright: ${error}`);
-      }
-    }
-
     try {
-      const executablePath = this.findBrowser();
-      const proxy = await this.detectProxy();
-      const launchOptions = this.buildLaunchOptions(executablePath, false, proxy);
-
-      if (proxy) {
-        console.error(`使用代理: ${proxy}`);
-      }
-
-      const browser = await chromium.launch(launchOptions);
-
-      // 重要：setup 工具必须保存到共享路径，而不是会话路径
-      // 这样 MCP 服务器才能读取到认证状态
-      const storageStatePath = this.getSharedStorageStatePath();
-      
-      // 确保共享目录存在
-      const sharedDir = path.dirname(storageStatePath);
-      if (!fs.existsSync(sharedDir)) {
-        fs.mkdirSync(sharedDir, { recursive: true });
-        console.error(`创建共享目录: ${sharedDir}`);
-      }
-      
-      const contextOptions = this.buildHeadedContextOptions(storageStatePath);
-
-      // 如果有旧的认证状态，加载它
-      if (contextOptions.storageState) {
-        console.error(`加载已有认证状态: ${storageStatePath}`);
-      }
-
-      const context = await browser.newContext(contextOptions);
-      const page = await context.newPage();
-
-      // 打开 HUGE AI 搜索页面
-      console.error("打开 HUGE AI 搜索页面...");
-      await page.goto("https://www.google.com/search?q=hello&udm=50", {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
-      });
-
-      console.error("\n" + "=".repeat(60));
-      console.error("🌐 浏览器窗口已打开！");
-      console.error("");
-      console.error("请在浏览器中完成以下操作：");
-      console.error("  1. 如果出现验证码，请完成验证");
-      console.error("  2. 如果需要登录 Google，请登录你的账户");
-      console.error("  3. 完成后，关闭浏览器窗口即可");
-      console.error("");
-      console.error("⏱️  最长等待时间: 5 分钟");
-      console.error("=".repeat(60) + "\n");
-
-      // 等待用户操作（最多 5 分钟）
-      const maxWaitMs = 5 * 60 * 1000;
-      const startTime = Date.now();
-
-      // 监听浏览器关闭事件，在关闭前保存状态
-      let browserClosed = false;
-      let stateSaved = false;
-      
-      // 在页面关闭前保存状态
-      page.on("close", async () => {
-        if (!stateSaved) {
-          try {
-            console.error("页面即将关闭，保存认证状态...");
-            await context.storageState({ path: storageStatePath });
-            stateSaved = true;
-            console.error(`✅ 认证状态已保存到: ${storageStatePath}`);
-          } catch (e) {
-            console.error(`保存状态失败: ${e}`);
-          }
-        }
-      });
-      
-      browser.on("disconnected", () => {
-        browserClosed = true;
-        console.error("检测到浏览器已关闭");
-      });
-
-      // 简单等待，不做频繁保存操作（避免弹窗）
-      while (!browserClosed && Date.now() - startTime < maxWaitMs) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-
-      // 如果是超时而不是用户关闭，保存状态
-      if (!browserClosed && !stateSaved) {
-        try {
-          console.error("等待超时，保存认证状态并关闭浏览器...");
-          await context.storageState({ path: storageStatePath });
-          stateSaved = true;
-          await context.close();
-          await browser.close();
-        } catch {
-          // ignore
-        }
-      }
-
-      // 等待一下确保状态保存完成
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // 检查状态文件是否存在
-      if (fs.existsSync(storageStatePath)) {
-        console.error(`\n✅ 登录流程完成！认证状态已保存到: ${storageStatePath}`);
+      console.error("使用 nodriver 执行登录流程...");
+      const nodriverResult = await this.runNodriverAuthFlow(NODRIVER_LOGIN_URL);
+      if (nodriverResult.success && nodriverResult.stateSaved) {
         return {
           success: true,
-          message: "登录完成！认证状态已保存，现在可以正常使用搜索功能了。",
-        };
-      } else {
-        return {
-          success: true,
-          message: "登录流程完成。如果仍有问题，请重新运行此命令。",
+          message: "登录完成（nodriver）！认证状态已保存，现在可以正常使用搜索功能了。",
         };
       }
+      return {
+        success: false,
+        message: `登录流程失败（nodriver）: ${nodriverResult.message}`,
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`登录流程失败: ${errorMsg}`);
