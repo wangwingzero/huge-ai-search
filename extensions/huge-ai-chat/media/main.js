@@ -1020,9 +1020,9 @@
     text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
     text = text.replace(
-      /\[((?:\\.|[^\]])+)\]\((?:<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
-      (_, rawLabel, angleWrappedUrl, plainUrl) => {
-        const url = angleWrappedUrl || plainUrl || "";
+      /\[((?:\\.|[^\]])+)\]\((?:&lt;([^&]+)&gt;|<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
+      (_, rawLabel, escapedAngleWrappedUrl, angleWrappedUrl, plainUrl) => {
+        const url = escapedAngleWrappedUrl || angleWrappedUrl || plainUrl || "";
         const safeUrl = sanitizeHttpUrl(url);
         const label = String(rawLabel || "").replace(/\\([\[\]\\])/g, "$1");
         if (!safeUrl) {

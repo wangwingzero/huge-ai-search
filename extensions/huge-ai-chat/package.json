@@ -4,7 +4,7 @@
   "displayName": "HUGE",
   "description": "在 VS Code 里直接对话 HUGE AI，支持连续追问、代码选中发送与来源核验。",
   "icon": "media/huge-ai-chat-icon.png",
-  "version": "0.4.16",
+  "version": "0.4.17",
   "author": "TigerWang",
   "license": "MIT",
   "repository": {
@@ -150,8 +150,8 @@
           "type": "object",
           "default": {
             "HUGE_AI_SEARCH_IMAGE_DRIVER": "playwright",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "55000",
-            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.15"
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS": "35000",
+            "HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER": "1.0"
           },
           "additionalProperties": {
             "type": "string"

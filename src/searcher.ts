@@ -325,9 +325,12 @@ const NODRIVER_IMAGE_SEARCH_SCRIPT_FILE_NAME = "nodriver_image_search_bridge_v2.
 const NODRIVER_IMAGE_SEARCH_TIMEOUT_SECONDS = 70;
 const NODRIVER_IMAGE_SEARCH_HEADLESS_DEFAULT = true;
 const NODRIVER_IMAGE_FAST_ATTEMPT_TIMEOUT_SECONDS = 28;
-const IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS = 8000;
-const IMAGE_UPLOAD_PROGRESS_BASE_MS = 12000;
-const IMAGE_UPLOAD_SETTLE_BASE_MS = 1800;
+const IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS = 4500;
+const IMAGE_UPLOAD_PROGRESS_BASE_MS = 6500;
+const IMAGE_UPLOAD_SETTLE_BASE_MS = 1000;
+const IMAGE_UPLOAD_ATTACHMENT_READY_MIN_MS = 1600;
+const IMAGE_UPLOAD_PROGRESS_MIN_MS = 2200;
+const IMAGE_UPLOAD_SETTLE_MIN_MS = 350;
 const IMAGE_UPLOAD_MAX_ATTACHMENT_READY_MS = 30000;
 const IMAGE_UPLOAD_MAX_PROGRESS_MS = 50000;
 const IMAGE_UPLOAD_MAX_SETTLE_MS = 6000;
@@ -4668,6 +4671,11 @@ export class AISearcher {
     }
 
     let sizeMultiplier = 1;
+    if (fileSizeMb > 0 && fileSizeMb <= 1.5) {
+      sizeMultiplier = 0.75;
+    } else if (fileSizeMb > 1.5 && fileSizeMb <= 3) {
+      sizeMultiplier = 0.9;
+    }
     if (fileSizeMb >= 12) {
       sizeMultiplier = 2.5;
     } else if (fileSizeMb >= 8) {
@@ -4695,17 +4703,17 @@ export class AISearcher {
     return {
       attachmentReadyMs: clampNumber(
         Math.round(IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS * multiplier),
-        IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS,
+        IMAGE_UPLOAD_ATTACHMENT_READY_MIN_MS,
         IMAGE_UPLOAD_MAX_ATTACHMENT_READY_MS
       ),
       uploadProgressMs: clampNumber(
         Math.round(IMAGE_UPLOAD_PROGRESS_BASE_MS * multiplier),
-        IMAGE_UPLOAD_PROGRESS_BASE_MS,
+        IMAGE_UPLOAD_PROGRESS_MIN_MS,
         IMAGE_UPLOAD_MAX_PROGRESS_MS
       ),
       postUploadSettleMs: clampNumber(
         Math.round(IMAGE_UPLOAD_SETTLE_BASE_MS * multiplier),
-        IMAGE_UPLOAD_SETTLE_BASE_MS,
+        IMAGE_UPLOAD_SETTLE_MIN_MS,
         IMAGE_UPLOAD_MAX_SETTLE_MS
       ),
       fileSizeMb,
@@ -4728,6 +4736,22 @@ export class AISearcher {
             await input.setInputFiles(imagePath, { timeout: 4000 });
             const accept = await input.getAttribute("accept") || "(无)";
             console.error(`setInputFiles 成功: selector='${selector}', accept='${accept}'`);
+            const quickMutationReady = await this.waitForFileInputMutation(beforeSnapshot, 1200);
+            if (quickMutationReady) {
+              if (
+                await this.waitForUploadProgressDone(
+                  Math.min(waitProfile.uploadProgressMs, 2600)
+                )
+              ) {
+                console.error(
+                  `setInputFiles 快速路径命中（结构变化+短进度检查），按上传成功处理: selector='${selector}'`
+                );
+                return true;
+              }
+              console.error(
+                `setInputFiles 快速路径检测到结构变化，但短进度检查未通过，继续完整检查: selector='${selector}'`
+              );
+            }
             if (
               (await this.waitForImageAttachmentReady(imagePath, waitProfile.attachmentReadyMs)) &&
               (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs))
@@ -4735,7 +4759,7 @@ export class AISearcher {
               console.error("检测到附件就绪且上传进度已完成");
               return true;
             }
-            if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
+            if (quickMutationReady || (await this.waitForFileInputMutation(beforeSnapshot, 2500))) {
               if (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs)) {
                 console.error(
                   `setInputFiles 后检测到输入结构变化且上传进度完成，按上传成功处理: selector='${selector}'`
@@ -5040,7 +5064,19 @@ export class AISearcher {
 
       await chooser.setFiles(imagePath);
       console.error("通过 filechooser 上传图片");
-      await this.page.waitForTimeout(Math.max(800, Math.floor(waitProfile.postUploadSettleMs / 2)));
+      await this.page.waitForTimeout(Math.max(350, Math.floor(waitProfile.postUploadSettleMs / 3)));
+      const quickMutationReady = await this.waitForFileInputMutation(beforeSnapshot, 1200);
+      if (quickMutationReady) {
+        if (
+          await this.waitForUploadProgressDone(
+            Math.min(waitProfile.uploadProgressMs, 2600)
+          )
+        ) {
+          console.error("filechooser 快速路径命中（结构变化+短进度检查），按上传成功处理");
+          return true;
+        }
+        console.error("filechooser 快速路径检测到结构变化，但短进度检查未通过，继续完整检查");
+      }
       if (
         (await this.waitForImageAttachmentReady(imagePath, waitProfile.attachmentReadyMs)) &&
         (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs))
@@ -5048,7 +5084,7 @@ export class AISearcher {
         console.error("filechooser 检测到附件就绪且上传进度已完成");
         return true;
       }
-      if (await this.waitForFileInputMutation(beforeSnapshot, 2500)) {
+      if (quickMutationReady || (await this.waitForFileInputMutation(beforeSnapshot, 2500))) {
         if (await this.waitForUploadProgressDone(waitProfile.uploadProgressMs)) {
           console.error("filechooser 上传后检测到输入结构变化且上传进度完成，按上传成功处理");
           return true;
@@ -5158,17 +5194,25 @@ export class AISearcher {
       }
 
       if (await this.trySetImageInputFiles(imagePath, waitProfile)) {
-        console.error("通过直接文件输入上传图片");
+        console.error(
+          `通过直接文件输入上传图片（elapsed=${Date.now() - startMs}ms）`
+        );
         // 等待 Google 处理上传的图片
         if (this.page) await this.page.waitForTimeout(waitProfile.postUploadSettleMs);
         return true;
       }
 
       if (await this.tryUploadViaMoreInputMenu(imagePath, waitProfile)) {
+        console.error(
+          `通过“更多输入项”菜单上传图片（elapsed=${Date.now() - startMs}ms）`
+        );
         return true;
       }
 
       if (await this.tryUploadViaVisibleOptions(imagePath, waitProfile)) {
+        console.error(
+          `通过可见上传选项上传图片（elapsed=${Date.now() - startMs}ms）`
+        );
         return true;
       }
     }
@@ -5680,7 +5724,8 @@ export class AISearcher {
         result.error = "搜索过程中页面已关闭（可能超时）。";
         return result;
       }
-      console.error("短暂等待来源链接渲染（最多2秒）...");
+      const sourceWaitMs = hasImageInput ? 400 : 1000;
+      console.error(`短暂等待来源链接渲染（最多${sourceWaitMs}ms）...`);
       try {
         await this.page.waitForFunction(
           `(() => {
@@ -5727,7 +5772,7 @@ export class AISearcher {
             return nonGoogleCount >= 1;
           })()`,
           undefined,
-          { timeout: 1000 }
+          { timeout: sourceWaitMs }
         );
         console.error("检测到来源链接");
       } catch {
