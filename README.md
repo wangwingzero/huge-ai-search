@@ -217,41 +217,33 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
 ## ⭐ 深度追问流程（必须遵循）
 
 ### 第一步：初次搜索
-```
 mcp_huge_ai_search_search({
   query: "{技术/问题} 是什么？核心概念和常见用法？",
   language: "zh-CN",
   follow_up: false
 })
-```
 → 获取 `session_id`
 
 ### 第二步：场景化追问（必追！）
-```
 mcp_huge_ai_search_search({
   query: "如果我的场景是 {具体场景}，应该怎么做？",
   session_id: "上一步返回的 session_id",
   follow_up: true
 })
-```
 
 ### 第三步：避坑追问（必追！）
-```
 mcp_huge_ai_search_search({
   query: "有哪些常见的坑和反模式需要避免？",
   session_id: "同一个 session_id",
   follow_up: true
 })
-```
 
 ### 第四步：最佳实践追问（推荐）
-```
 mcp_huge_ai_search_search({
   query: "有哪些推荐的最佳实践？",
   session_id: "同一个 session_id",
   follow_up: true
 })
-```
 
 ---
 
