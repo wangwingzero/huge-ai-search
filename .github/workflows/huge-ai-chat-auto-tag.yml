@@ -1,0 +1,64 @@
+name: huge-ai-chat-auto-tag
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "extensions/huge-ai-chat/**"
+      - ".github/workflows/huge-ai-chat.yml"
+      - ".github/workflows/huge-ai-chat-auto-tag.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: huge-ai-chat-auto-tag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  auto-tag:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extensions/huge-ai-chat/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extensions/huge-ai-chat
+        run: npm ci
+
+      - name: Run tests
+        working-directory: extensions/huge-ai-chat
+        run: npm test
+
+      - name: Bump patch version
+        working-directory: extensions/huge-ai-chat
+        run: |
+          npm version patch --no-git-tag-version
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extensions/huge-ai-chat/package.json extensions/huge-ai-chat/package-lock.json
+          git commit -m "chore(huge-ai-chat): auto release v${VERSION}"
+
+      - name: Create and push release tag
+        run: |
+          TAG="huge-ai-chat-v${VERSION}"
+          git tag "$TAG"
+          git push origin HEAD:main
+          git push origin "$TAG"
