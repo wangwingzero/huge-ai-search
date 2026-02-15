@@ -1,12 +1,12 @@
 {
   "name": "huge-ai-search",
-  "version": "1.1.28",
+  "version": "1.1.29",
   "description": "Huge AI Search MCP Server - 使用 HUGE AI Mode 进行智能搜索，支持追问对话",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "huge-ai-search": "./dist/index.js",
-    "huge-ai-search-setup": "./dist/setup.js"
+    "huge-ai-search": "dist/index.js",
+    "huge-ai-search-setup": "dist/setup.js"
   },
   "files": [
     "dist",

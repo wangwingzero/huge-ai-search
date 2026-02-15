@@ -89,6 +89,9 @@ npx huge-ai-search
 npm install -g huge-ai-search
 ```
 
+> Windows 默认推荐：先全局安装 `npm i -g huge-ai-search`，再用 `cmd /c huge-ai-search`。  
+> 如果必须用 npx，请使用 `cmd /c npx ...` 方式，不要直接把 `command` 写成 `npx`。
+
 ## MCP 配置
 
 ### Cursor
@@ -115,7 +118,7 @@ npm install -g huge-ai-search
   "mcpServers": {
     "huge-ai-search": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+      "args": ["/c", "huge-ai-search"]
     }
   }
 }
@@ -132,16 +135,16 @@ claude mcp add huge-ai-search -- npx -y huge-ai-search@latest
 **Windows (PowerShell):**
 
 ```powershell
-claude mcp add-json huge-ai-search -s user '{"command":"cmd", "args":["/c", "npx", "-y", "huge-ai-search@latest"]}'
+claude mcp add-json huge-ai-search -s user '{"command":"cmd", "args":["/c", "huge-ai-search"]}'
 ```
 
 **Windows (CMD):**
 
 ```cmd
-claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c\", \"npx\", \"-y\", \"huge-ai-search@latest\"]}"
+claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c\", \"huge-ai-search\"]}"
 ```
 
-> ⚠️ Windows 上 `claude mcp add` 命令不支持 `-y` 参数，需要使用 `add-json` 方式。
+> ⚠️ Windows 推荐直接用 `cmd /c huge-ai-search`，避免直接把 `command` 写成 `npx` 导致启动失败。
 > - PowerShell：用单引号 `'...'` 包裹 JSON，内部双引号无需转义
 > - CMD：用双引号 `"..."` 包裹 JSON，内部双引号需用 `\"` 转义
 
@@ -172,7 +175,7 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
     "huge-ai-search": {
       "disabled": false,
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"],
+      "args": ["/c", "huge-ai-search"],
       "autoApprove": ["search"]
     }
   }
@@ -196,6 +199,28 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
 [mcp_servers.huge-ai-search]
 command = "npx"
 args = ["-y", "huge-ai-search@latest"]
+```
+
+Windows 推荐：
+
+```toml
+[mcp_servers.huge-ai-search]
+type = "stdio"
+command = "cmd"
+args = ["/c", "huge-ai-search"]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+```
+
+Windows 如需坚持 npx（兼容写法）：
+
+```toml
+[mcp_servers.huge-ai-search]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "huge-ai-search@latest"]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
 ```
 
 或使用命令行快捷添加：
@@ -228,7 +253,7 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
   "mcpServers": {
     "huge-ai-search": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+      "args": ["/c", "huge-ai-search"]
     }
   }
 }
@@ -260,7 +285,7 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
   "mcpServers": {
     "huge-ai-search": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+      "args": ["/c", "huge-ai-search"]
     }
   }
 }
@@ -290,7 +315,7 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
   "mcpServers": {
     "huge-ai-search": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+      "args": ["/c", "huge-ai-search"]
     }
   }
 }
@@ -324,7 +349,7 @@ codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
   "mcpServers": {
     "huge-ai-search": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "huge-ai-search@latest"]
+      "args": ["/c", "huge-ai-search"]
     }
   }
 }
@@ -476,3 +501,4 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 ## License
 
 MIT
+

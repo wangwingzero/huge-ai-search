@@ -40,6 +40,20 @@ const DEFAULT_MCP_ENV: Record<string, string> = {
   NPM_CONFIG_LOGLEVEL: "error",
 };
 
+function normalizeWindowsCommandName(command: string): string {
+  return path.basename(command).toLowerCase();
+}
+
+function isWindowsNpxCommand(command: string): boolean {
+  const normalized = normalizeWindowsCommandName(command);
+  return normalized === "npx" || normalized === "npx.cmd";
+}
+
+function isWindowsHugeSearchCommand(command: string): boolean {
+  const normalized = normalizeWindowsCommandName(command);
+  return normalized === "huge-ai-search" || normalized === "huge-ai-search.cmd";
+}
+
 function getSanitizedEnv(extraEnv?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -377,13 +391,14 @@ export class McpClientManager {
     const configuredCwd = (config.get<string>("mcp.cwd") || "").trim();
 
     if (configuredCommand) {
+      const configuredResolved = this.normalizeConfiguredCommand({
+        command: configuredCommand,
+        args: configuredArgs,
+        cwd: configuredCwd || undefined,
+        source: "configured",
+      });
       return [
-        {
-          command: configuredCommand,
-          args: configuredArgs,
-          cwd: configuredCwd || undefined,
-          source: "configured",
-        },
+        configuredResolved,
       ];
     }
 
@@ -421,6 +436,32 @@ export class McpClientManager {
       cwd,
       source: "npx-auto",
     };
+  }
+
+  private normalizeConfiguredCommand(
+    resolved: ResolvedServerCommand
+  ): ResolvedServerCommand {
+    if (process.platform !== "win32") {
+      return resolved;
+    }
+
+    if (normalizeWindowsCommandName(resolved.command) === "cmd") {
+      return resolved;
+    }
+
+    if (isWindowsNpxCommand(resolved.command) || isWindowsHugeSearchCommand(resolved.command)) {
+      const normalized: ResolvedServerCommand = {
+        ...resolved,
+        command: "cmd",
+        args: ["/c", resolved.command, ...resolved.args],
+      };
+      this.log(
+        `[MCP] Windows 兼容模式：自动将配置命令 "${resolved.command}" 包装为 "cmd /c ..."`
+      );
+      return normalized;
+    }
+
+    return resolved;
   }
 
   private findLocalServerEntry(): string | null {

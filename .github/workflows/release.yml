@@ -125,7 +125,7 @@ jobs:
   publish-npm:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,13 +143,22 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
+      - name: Check npm version exists
+        id: npm_version_check
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "package=$PKG_NAME@$PKG_VERSION"
+          if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Version already published, skip npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Version not published yet, continue."
+          fi
 
       - name: Publish to npm
+        if: steps.npm_version_check.outputs.exists == 'false'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
