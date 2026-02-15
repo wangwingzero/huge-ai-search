@@ -71,7 +71,7 @@ jobs:
       group: huge-ai-chat-publish-${{ github.ref }}
       cancel-in-progress: false
     if: |
-      github.event_name == 'release' ||
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'huge-ai-chat-v')) ||
       startsWith(github.ref, 'refs/tags/huge-ai-chat-v') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
     steps:
@@ -113,6 +113,17 @@ jobs:
           fi
           echo "PUBLISHER=$PUBLISHER" >> "$GITHUB_ENV"
 
+      - name: Resolve extension id and version
+        run: |
+          EXT_NAME="$(node -p "require('./extensions/huge-ai-chat/package.json').name")"
+          EXT_VERSION="$(node -p "require('./extensions/huge-ai-chat/package.json').version")"
+          if [ -z "$EXT_NAME" ] || [ -z "$EXT_VERSION" ]; then
+            echo "Extension name/version not found in extensions/huge-ai-chat/package.json"
+            exit 1
+          fi
+          echo "EXT_NAME=$EXT_NAME" >> "$GITHUB_ENV"
+          echo "EXT_VERSION=$EXT_VERSION" >> "$GITHUB_ENV"
+
       - name: Validate release readiness (publisher + OpenVSX secret)
         working-directory: extensions/huge-ai-chat
         env:
@@ -125,7 +136,25 @@ jobs:
           PUBLISHER: ${{ env.PUBLISHER }}
         run: npx ovsx create-namespace "$PUBLISHER" -p "$OVSX_PAT" || true
 
+      - name: Check Open VSX version exists
+        id: ovsx_version_check
+        env:
+          PUBLISHER: ${{ env.PUBLISHER }}
+          EXT_NAME: ${{ env.EXT_NAME }}
+          EXT_VERSION: ${{ env.EXT_VERSION }}
+        run: |
+          STATUS_CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://open-vsx.org/api/${PUBLISHER}/${EXT_NAME}/${EXT_VERSION}")"
+          echo "Open VSX status code: ${STATUS_CODE}"
+          if [ "$STATUS_CODE" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Open VSX already has ${PUBLISHER}.${EXT_NAME}@${EXT_VERSION}, skip publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Open VSX does not have ${PUBLISHER}.${EXT_NAME}@${EXT_VERSION}, continue publish."
+          fi
+
       - name: Publish to Open VSX
+        if: steps.ovsx_version_check.outputs.exists == 'false'
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: npx ovsx publish "$VSIX_PATH" -p "$OVSX_PAT"
