@@ -10,8 +10,8 @@ const AUTH_KEYWORDS = [
 ];
 
 const ERROR_PATTERNS = [/##\s*(?:❌\s*)?搜索失败/i, /搜索执行异常/i, /搜索失败/i];
-const DEBUG_BLOCK_START = ":::huge_ai_chat_debug_start:::";
-const DEBUG_BLOCK_END = ":::huge_ai_chat_debug_end:::";
+const SOURCES_BLOCK_START = ":::huge_ai_chat_sources_start:::";
+const SOURCES_BLOCK_END = ":::huge_ai_chat_sources_end:::";
 const NO_RECORD_PATTERNS = [
   "该词条在当前技术语料库和实时搜索中无记录",
   "该词条在当前技术语料库和实时搜索中无可验证记录",
@@ -23,16 +23,6 @@ function isSuccessResultEnvelope(text: string): boolean {
 
 function normalizeLineEndings(text: string): string {
   return text.replace(/\r\n/g, "\n").trim();
-}
-
-function escapeMarkdownLinkText(text: string): string {
-  return (text || "")
-    .replace(/\r?\n+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\\/g, "\\\\")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
-    .trim();
 }
 
 function extractSessionId(raw: string): string | undefined {
@@ -162,9 +152,9 @@ function extractDebugSection(raw: string): string | undefined {
   return tail;
 }
 
-function buildDebugDetails(debugText: string): string {
-  const encoded = Buffer.from(debugText, "utf8").toString("base64");
-  return [DEBUG_BLOCK_START, encoded, DEBUG_BLOCK_END].join("\n");
+function buildSourcesDetails(sources: SearchSource[]): string {
+  const encoded = Buffer.from(JSON.stringify(sources), "utf8").toString("base64");
+  return [SOURCES_BLOCK_START, encoded, SOURCES_BLOCK_END].join("\n");
 }
 
 function normalizeErrorBody(raw: string): string {
@@ -233,16 +223,7 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
   chunks.push(answer);
 
   if (sources.length > 0) {
-    const sourceLines = sources.map((source, index) => {
-      const safeTitle = escapeMarkdownLinkText(source.title || guessTitleFromUrl(source.url));
-      // Wrap URL with <> to avoid markdown parsing breaks on parentheses/long fragments.
-      return `${index + 1}. [${safeTitle}](<${source.url}>)`;
-    });
-    chunks.push(["### 相关链接", ...sourceLines].join("\n"));
-  }
-
-  if (debugText) {
-    chunks.push(buildDebugDetails(debugText));
+    chunks.push(buildSourcesDetails(sources));
   }
 
   return {

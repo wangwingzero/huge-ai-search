@@ -32,7 +32,8 @@ test("parseSearchToolText should parse answer/sources/session/debug marker", () 
   assert.equal(parsed.sessionId, "session_123");
   assert.equal(parsed.sources.length, 2);
   assert.match(parsed.renderedMarkdown, /React 19 引入了新的 Actions 能力/);
-  assert.match(parsed.renderedMarkdown, /:::huge_ai_chat_debug_start:::/);
+  assert.match(parsed.renderedMarkdown, /:::huge_ai_chat_sources_start:::/);
+  assert.doesNotMatch(parsed.renderedMarkdown, /:::huge_ai_chat_debug_start:::/);
   assert.doesNotMatch(parsed.renderedMarkdown, /<details>/);
 });
 
@@ -79,8 +80,8 @@ test("parseSearchToolText should fallback extract plain urls as sources", () => 
   const parsed = parseSearchToolText(raw);
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 2);
-  assert.match(parsed.renderedMarkdown, /### 相关链接/);
-  assert.match(parsed.renderedMarkdown, /\[example\.com\]\(<https:\/\/example\.com\/a>\)/);
+  assert.match(parsed.renderedMarkdown, /:::huge_ai_chat_sources_start:::/);
+  assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
 });
 
 test("parseSearchToolText should keep no-record response and drop extracted sources", () => {
@@ -118,6 +119,5 @@ test("parseSearchToolText should escape brackets in source title", () => {
   const parsed = parseSearchToolText(raw);
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 1);
-  assert.match(parsed.renderedMarkdown, /\\\[20-（受害人实际年龄-60）\\\]/);
-  assert.match(parsed.renderedMarkdown, /\(<https:\/\/zhuanlan\.zhihu\.com\/p\/350670355/);
+  assert.match(parsed.renderedMarkdown, /:::huge_ai_chat_sources_start:::/);
 });

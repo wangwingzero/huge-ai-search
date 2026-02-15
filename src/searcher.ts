@@ -5204,6 +5204,105 @@ export class AISearcher {
     return false;
   }
 
+  private isLikelyTextPlaceholderAnswer(
+    answer: string,
+    query: string,
+    sourceCount: number
+  ): boolean {
+    const trimmed = (answer || "").trim();
+    if (!trimmed) return true;
+
+    const normalizedAnswer = this.normalizeAnswerText(trimmed);
+    const normalizedQuery = this.normalizeAnswerText(query || "");
+
+    const loadingHints = [
+      "searching",
+      "searchingingoogle",
+      "thinking",
+      "generating",
+      "loading",
+      "正在思考",
+      "正在生成",
+      "正在查找",
+      "搜索中",
+      "加载中",
+    ];
+
+    const hasLoadingHint = loadingHints.some((hint) =>
+      normalizedAnswer.includes(this.normalizeAnswerText(hint))
+    );
+
+    const answerWithoutQueryPrefix =
+      normalizedQuery && normalizedAnswer.startsWith(normalizedQuery)
+        ? normalizedAnswer.slice(normalizedQuery.length).trim()
+        : normalizedAnswer;
+
+    const looksLikeQueryEchoOnly =
+      normalizedQuery.length > 0 &&
+      (normalizedAnswer === normalizedQuery || answerWithoutQueryPrefix.length <= 24);
+
+    const lineCount = trimmed
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean).length;
+
+    if (sourceCount === 0 && hasLoadingHint && trimmed.length <= 280) {
+      return true;
+    }
+
+    if (sourceCount === 0 && looksLikeQueryEchoOnly && trimmed.length <= 220) {
+      return true;
+    }
+
+    if (sourceCount === 0 && hasLoadingHint && lineCount <= 4) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async waitForMeaningfulTextAnswer(
+    page: Page,
+    query: string,
+    initial: SearchResult,
+    maxWaitSeconds: number = 8
+  ): Promise<SearchResult> {
+    let best = initial;
+
+    for (let i = 0; i < maxWaitSeconds; i++) {
+      if (!this.page) return best;
+      try {
+        await page.waitForTimeout(1000);
+      } catch {
+        return best;
+      }
+
+      const extracted = await this.extractAiAnswer(page);
+      if (!extracted.success) {
+        continue;
+      }
+
+      if (extracted.aiAnswer.length > best.aiAnswer.length) {
+        best = extracted;
+      }
+
+      if (
+        !this.isLikelyTextPlaceholderAnswer(
+          extracted.aiAnswer,
+          query,
+          extracted.sources.length
+        )
+      ) {
+        console.error(
+          `检测到有效文本回答（第 ${i + 1} 秒），长度: ${extracted.aiAnswer.length}`
+        );
+        return extracted;
+      }
+    }
+
+    return best;
+  }
+
   private async waitForImageGenerationStart(
     page: Page,
     baselineAnswer: string,
@@ -5642,6 +5741,23 @@ export class AISearcher {
       }
       let extractedResult = await this.extractAiAnswer(this.page);
       if (
+        !hasImageInput &&
+        this.isLikelyTextPlaceholderAnswer(
+          extractedResult.aiAnswer,
+          normalizedQuery,
+          extractedResult.sources.length
+        )
+      ) {
+        console.error("检测到文本结果可能仍处于占位态，继续等待真实回答...");
+        extractedResult = await this.waitForMeaningfulTextAnswer(
+          this.page,
+          normalizedQuery,
+          extractedResult,
+          8
+        );
+      }
+
+      if (
         hasImageInput &&
         this.isPlaceholderImageAnswer(extractedResult.aiAnswer, baselineAiAnswer)
       ) {
@@ -5823,7 +5939,22 @@ export class AISearcher {
       }
 
       // 提取 AI 回答
-      const extractedResult = await this.extractAiAnswer(this.page);
+      let extractedResult = await this.extractAiAnswer(this.page);
+      if (
+        this.isLikelyTextPlaceholderAnswer(
+          extractedResult.aiAnswer,
+          query,
+          extractedResult.sources.length
+        )
+      ) {
+        console.error("追问结果疑似占位态，继续等待真实回答...");
+        extractedResult = await this.waitForMeaningfulTextAnswer(
+          this.page,
+          query,
+          extractedResult,
+          8
+        );
+      }
       result.sources = extractedResult.sources;
 
       // 保存完整的页面回答内容

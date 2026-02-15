@@ -671,6 +671,29 @@ select {
   text-underline-offset: 2px;
 }
 
+.message details {
+  margin: 10px 0;
+  border: 1px solid var(--gh-border-default);
+  border-radius: 8px;
+  background: var(--gh-canvas-subtle);
+}
+
+.message details summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+
+.sources-list {
+  margin: 0;
+  padding: 0 16px 10px 32px;
+}
+
+.sources-list li {
+  margin: 6px 0;
+}
+
 .code-block {
   border: 1px solid var(--gh-border-default);
   border-radius: 8px;

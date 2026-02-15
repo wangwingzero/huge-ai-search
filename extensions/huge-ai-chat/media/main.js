@@ -11,6 +11,8 @@
   const WAIT_STAGE_PROCESSING_MS = 8000;
   const DEBUG_BLOCK_START = ":::huge_ai_chat_debug_start:::";
   const DEBUG_BLOCK_END = ":::huge_ai_chat_debug_end:::";
+  const SOURCES_BLOCK_START = ":::huge_ai_chat_sources_start:::";
+  const SOURCES_BLOCK_END = ":::huge_ai_chat_sources_end:::";
   const KNOWN_CODE_LANGUAGES = new Set([
     "python",
     "py",
@@ -1000,15 +1002,36 @@
 
     let text = normalizeBrokenMathTokenLines(autoFenceLooseCodeBlocks(raw));
     const debugBlocks = [];
+    const sourcesBlocks = [];
     const codeBlocks = [];
     const debugRegex = new RegExp(
       `${DEBUG_BLOCK_START}\\n([A-Za-z0-9+/=]+)\\n${DEBUG_BLOCK_END}`,
+      "g"
+    );
+    const sourcesRegex = new RegExp(
+      `${SOURCES_BLOCK_START}\\n([A-Za-z0-9+/=]+)\\n${SOURCES_BLOCK_END}`,
       "g"
     );
 
     text = text.replace(debugRegex, (_, payload) => {
       const token = `__DEBUG_BLOCK_${debugBlocks.length}__`;
       debugBlocks.push(decodeBase64Utf8(payload));
+      return token;
+    });
+
+    text = text.replace(sourcesRegex, (_, payload) => {
+      const token = `__SOURCES_BLOCK_${sourcesBlocks.length}__`;
+      const decoded = decodeBase64Utf8(payload);
+      try {
+        const parsed = JSON.parse(decoded);
+        if (Array.isArray(parsed)) {
+          sourcesBlocks.push(parsed);
+        } else {
+          sourcesBlocks.push([]);
+        }
+      } catch {
+        sourcesBlocks.push([]);
+      }
       return token;
     });
 
@@ -1029,10 +1052,11 @@
     text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
     text = text.replace(
-      /\[([^\]]+)\]\((?:<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
-      (_, label, angleWrappedUrl, plainUrl) => {
+      /\[((?:\\.|[^\]])+)\]\((?:<([^>]+)>|(https?:\/\/[^\s)]+))\)/g,
+      (_, rawLabel, angleWrappedUrl, plainUrl) => {
         const url = angleWrappedUrl || plainUrl || "";
         const safeUrl = sanitizeHttpUrl(url);
+        const label = String(rawLabel || "").replace(/\\([\[\]\\])/g, "$1");
         if (!safeUrl) {
           return label;
         }
@@ -1047,6 +1071,7 @@
 
     text = text.replace(/<p>__CODE_BLOCK_(\d+)__<\/p>/g, "__CODE_BLOCK_$1__");
     text = text.replace(/<p>__DEBUG_BLOCK_(\d+)__<\/p>/g, "__DEBUG_BLOCK_$1__");
+    text = text.replace(/<p>__SOURCES_BLOCK_(\d+)__<\/p>/g, "__SOURCES_BLOCK_$1__");
 
     text = text.replace(/__CODE_BLOCK_(\d+)__/g, (_, index) => {
       const block = codeBlocks[Number(index)];
@@ -1070,13 +1095,29 @@
       ].join("");
     });
 
-    text = text.replace(/__DEBUG_BLOCK_(\d+)__/g, (_, index) => {
-      const debugText = debugBlocks[Number(index)] || "";
-      return (
-        "<details><summary>调试信息</summary><pre><code>" +
-        escapeHtml(debugText) +
-        "</code></pre></details>"
-      );
+    text = text.replace(/__SOURCES_BLOCK_(\d+)__/g, (_, index) => {
+      const entries = Array.isArray(sourcesBlocks[Number(index)]) ? sourcesBlocks[Number(index)] : [];
+      if (!entries.length) {
+        return "";
+      }
+
+      const lines = entries.map((entry, itemIndex) => {
+        const titleRaw = entry && typeof entry.title === "string" ? entry.title : "";
+        const title = (titleRaw || "").trim() || "未命名链接";
+        const urlRaw = entry && typeof entry.url === "string" ? entry.url : "";
+        const safeUrl = sanitizeHttpUrl(urlRaw || "");
+        if (!safeUrl) {
+          return `<li>${escapeHtml(title)}</li>`;
+        }
+        return `<li><a class="source-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(safeUrl)}">${escapeHtml(title)}</a></li>`;
+      });
+
+      return `<details class="sources-details"><summary>相关链接 (${entries.length})</summary><ol class="sources-list">${lines.join("")}</ol></details>`;
+    });
+
+    text = text.replace(/__DEBUG_BLOCK_(\d+)__/g, () => {
+      // 用户要求：调试信息不在 UI 展示。
+      return "";
     });
 
     return text;
