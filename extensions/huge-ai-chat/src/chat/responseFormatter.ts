@@ -41,7 +41,7 @@ function extractSessionId(raw: string): string | undefined {
 }
 
 function extractAnswer(raw: string): string {
-  const match = raw.match(/###\s*AI\s*回答\s*\n+([\s\S]*?)(?:\n###\s*来源[^\n]*|\n---\n|$)/i);
+  const match = raw.match(/###\s*AI\s*回答\s*\n+([\s\S]*?)(?:\n###\s*(?:来源|相关链接)[^\n]*|\n---\n|$)/i);
   if (match?.[1]?.trim()) {
     return match[1].trim();
   }
@@ -49,7 +49,7 @@ function extractAnswer(raw: string): string {
 }
 
 function extractSources(raw: string): SearchSource[] {
-  const sectionMatch = raw.match(/###\s*来源[^\n]*\n+([\s\S]*?)(?:\n---\n|$)/i);
+  const sectionMatch = raw.match(/###\s*(?:来源|相关链接)[^\n]*\n+([\s\S]*?)(?:\n---\n|$)/i);
   const target = sectionMatch?.[1] || raw;
   const sources: SearchSource[] = [];
 
@@ -238,7 +238,7 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
       // Wrap URL with <> to avoid markdown parsing breaks on parentheses/long fragments.
       return `${index + 1}. [${safeTitle}](<${source.url}>)`;
     });
-    chunks.push(["### 来源", ...sourceLines].join("\n"));
+    chunks.push(["### 相关链接", ...sourceLines].join("\n"));
   }
 
   if (debugText) {

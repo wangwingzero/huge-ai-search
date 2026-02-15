@@ -79,7 +79,7 @@ test("parseSearchToolText should fallback extract plain urls as sources", () => 
   const parsed = parseSearchToolText(raw);
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 2);
-  assert.match(parsed.renderedMarkdown, /### 来源/);
+  assert.match(parsed.renderedMarkdown, /### 相关链接/);
   assert.match(parsed.renderedMarkdown, /\[example\.com\]\(<https:\/\/example\.com\/a>\)/);
 });
 
@@ -95,7 +95,7 @@ test("parseSearchToolText should keep no-record response and drop extracted sour
   const parsed = parseSearchToolText(raw);
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 0);
-  assert.doesNotMatch(parsed.renderedMarkdown, /### 来源/);
+  assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
 });
 
 test("isNoRecordResponseText should support old and new phrases", () => {

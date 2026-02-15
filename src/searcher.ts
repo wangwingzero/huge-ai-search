@@ -3189,7 +3189,7 @@ export class AISearcher {
 
             const aiContainer = document.querySelector('div[data-subtree="aimc"]');
             if (!aiContainer) return 0;
-            const links = aiContainer.querySelectorAll('a[href^="http"]');
+            const links = aiContainer.querySelectorAll('a[href]');
             const seen = new Set();
             let count = 0;
             links.forEach(link => {
@@ -3449,7 +3449,7 @@ export class AISearcher {
       // 提取来源链接（从 AI 模式容器中提取）
       const aiContainer = document.querySelector('div[data-subtree="aimc"]');
       const linkContainer = aiContainer || document;
-      const links = linkContainer.querySelectorAll('a[href^="http"]');
+      const links = linkContainer.querySelectorAll('a[href]');
       const seenUrls = new Set();
 
       function isGoogleHost(hostname) {
@@ -5615,7 +5615,7 @@ export class AISearcher {
             }
             const aiContainer = document.querySelector('div[data-subtree="aimc"]');
             if (!aiContainer) return false;
-            const links = aiContainer.querySelectorAll('a[href^="http"]');
+            const links = aiContainer.querySelectorAll('a[href]');
             const seen = new Set();
             let nonGoogleCount = 0;
             links.forEach(link => {
