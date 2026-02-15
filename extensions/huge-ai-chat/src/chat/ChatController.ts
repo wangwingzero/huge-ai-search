@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { SetupRunner } from "../auth/SetupRunner";
-import { McpClientManager } from "../mcp/McpClientManager";
+import { McpClientManager, McpWarmupResult } from "../mcp/McpClientManager";
 import { ThreadStore } from "./ThreadStore";
 import { isAuthRelatedError, isNoRecordResponseText, parseSearchToolText } from "./responseFormatter";
 import {
@@ -15,6 +15,7 @@ import {
 
 const SEARCH_REQUEST_TIMEOUT_TEXT_MS = 120_000;
 const SEARCH_REQUEST_TIMEOUT_IMAGE_MS = 170_000;
+const MCP_WARMUP_WAIT_MS = 12_000;
 const MAX_PASTED_IMAGE_BYTES = 15 * 1024 * 1024;
 const TEMP_IMAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TEMP_IMAGE_CLEANUP_DELAY_MS = 10 * 60 * 1000;
@@ -321,7 +322,7 @@ export class ChatController implements vscode.Disposable {
   private sidebarDisposables: vscode.Disposable[] = [];
   private readonly pendingThreads = new Set<string>();
   private readonly lastQueryByThread = new Map<string, string>();
-  private warmupTask: Promise<void> | null = null;
+  private warmupTask: Promise<McpWarmupResult> | null = null;
   private readonly tempImageDir = path.join(os.tmpdir(), TEMP_IMAGE_DIR_NAME);
   private tempImageDirPrepared = false;
 
@@ -410,7 +411,7 @@ export class ChatController implements vscode.Disposable {
       })
     );
 
-    this.ensureMcpWarmup();
+    void this.ensureMcpWarmup();
   }
 
   async openChatPanel(): Promise<void> {
@@ -439,7 +440,7 @@ export class ChatController implements vscode.Disposable {
     this.panel.webview.html = this.getWebviewHtml(this.panel.webview);
     this.installPanelListeners(this.panel);
     this.postStateFull();
-    this.ensureMcpWarmup();
+    void this.ensureMcpWarmup();
   }
 
   async createThreadFromCommand(): Promise<void> {
@@ -543,7 +544,7 @@ export class ChatController implements vscode.Disposable {
     switch (payload.type) {
       case "panel/ready":
         this.postStateFull();
-        this.ensureMcpWarmup();
+        void this.ensureMcpWarmup();
         return;
       case "browser/open":
         this.openBrowserView();
@@ -672,6 +673,13 @@ export class ChatController implements vscode.Disposable {
       this.lastQueryByThread.set(threadId, text);
     } else {
       this.lastQueryByThread.delete(threadId);
+    }
+
+    const warmupReady = await this.waitForMcpWarmupBeforeSend(threadId);
+    if (!warmupReady) {
+      this.output.appendLine(
+        `[Chat] Warmup not ready, continue with direct request: thread=${threadId}`
+      );
     }
 
     let persistedImage: PersistedImageFile | null = null;
@@ -1128,12 +1136,56 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private ensureMcpWarmup(): void {
-    if (this.warmupTask) {
-      return;
+  private async waitForMcpWarmupBeforeSend(threadId: string): Promise<boolean> {
+    if (this.mcpManager.isConnected()) {
+      return true;
     }
 
-    this.warmupTask = (async () => {
+    this.postStatus(
+      "progress",
+      "正在等待搜索服务就绪",
+      "首条消息会优先等待 MCP 预热连接完成。",
+      "若预热超时，将自动降级为直接请求并触发重连。",
+      threadId
+    );
+
+    const task = this.ensureMcpWarmup();
+    try {
+      const result = await withTimeout(
+        task,
+        MCP_WARMUP_WAIT_MS,
+        `搜索服务预热超时（>${Math.floor(MCP_WARMUP_WAIT_MS / 1000)} 秒）`
+      );
+      if (result.ready) {
+        return true;
+      }
+      this.postStatus(
+        "warning",
+        "搜索服务预热未完成",
+        result.detail,
+        "将继续直接请求，并由连接层执行自动重连。",
+        threadId
+      );
+      return false;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.postStatus(
+        "warning",
+        "搜索服务预热超时",
+        detail,
+        "将继续直接请求，并由连接层执行自动重连。",
+        threadId
+      );
+      return false;
+    }
+  }
+
+  private ensureMcpWarmup(): Promise<McpWarmupResult> {
+    if (this.warmupTask) {
+      return this.warmupTask;
+    }
+
+    const task = (async () => {
       this.postStatus(
         "progress",
         "正在准备搜索服务",
@@ -1144,13 +1196,19 @@ export class ChatController implements vscode.Disposable {
       const result = await this.mcpManager.warmup();
       if (result.ready) {
         this.postStatus("success", "搜索服务已就绪", result.detail, result.suggestion);
-        return;
+        return result;
       }
 
       this.postStatus("warning", "搜索服务暂未就绪", result.detail, result.suggestion);
+      return result;
     })().finally(() => {
-      this.warmupTask = null;
+      if (this.warmupTask === task) {
+        this.warmupTask = null;
+      }
     });
+
+    this.warmupTask = task;
+    return task;
   }
 
   private postStateFull(): void {
