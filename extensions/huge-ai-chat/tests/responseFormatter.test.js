@@ -32,7 +32,8 @@ test("parseSearchToolText should parse answer/sources/session/debug marker", () 
   assert.equal(parsed.sessionId, "session_123");
   assert.equal(parsed.sources.length, 2);
   assert.match(parsed.renderedMarkdown, /React 19 引入了新的 Actions 能力/);
-  assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
+  assert.match(parsed.renderedMarkdown, /### 相关链接/);
+  assert.match(parsed.renderedMarkdown, /\[React Blog\]\(<https:\/\/react\.dev\/blog>\)/);
   assert.doesNotMatch(parsed.renderedMarkdown, /:::huge_ai_chat_debug_start:::/);
   assert.doesNotMatch(parsed.renderedMarkdown, /<details>/);
 });
@@ -81,7 +82,8 @@ test("parseSearchToolText should fallback extract plain urls as sources", () => 
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 2);
   assert.match(parsed.renderedMarkdown, /你可以参考这两篇资料/);
-  assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
+  assert.match(parsed.renderedMarkdown, /### 相关链接/);
+  assert.match(parsed.renderedMarkdown, /\[example\.com\]\(<https:\/\/example\.com\/a>\)/);
 });
 
 test("parseSearchToolText should keep no-record response and drop extracted sources", () => {
@@ -105,7 +107,7 @@ test("isNoRecordResponseText should support old and new phrases", () => {
   assert.equal(isNoRecordResponseText("这是普通回答"), false);
 });
 
-test("parseSearchToolText should escape brackets in source title", () => {
+test("parseSearchToolText should keep clickable link when source title is malformed", () => {
   const raw = [
     "### AI 回答",
     "",
@@ -119,7 +121,26 @@ test("parseSearchToolText should escape brackets in source title", () => {
   const parsed = parseSearchToolText(raw);
   assert.equal(parsed.isError, false);
   assert.equal(parsed.sources.length, 1);
-  assert.doesNotMatch(parsed.renderedMarkdown, /### (来源|相关链接)/);
+  assert.match(parsed.renderedMarkdown, /### 相关链接/);
+  assert.match(parsed.renderedMarkdown, /\(<https:\/\/zhuanlan\.zhihu\.com\/p\/350670355/);
+});
+
+test("parseSearchToolText should parse angle-wrapped source urls", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "这是正文。",
+    "",
+    "### 相关链接",
+    "",
+    "1. [Anthropic](<https://www.anthropic.com/news/opus-4-6>)",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.equal(parsed.sources.length, 1);
+  assert.equal(parsed.sources[0].url, "https://www.anthropic.com/news/opus-4-6");
+  assert.match(parsed.renderedMarkdown, /\[Anthropic\]\(<https:\/\/www\.anthropic\.com\/news\/opus-4-6>\)/);
 });
 
 test("parseSearchToolText should strip plain source tail cards without markdown links", () => {
@@ -143,4 +164,21 @@ test("parseSearchToolText should strip plain source tail cards without markdown 
   assert.match(parsed.renderedMarkdown, /Claude\.ai 网页端直接体验/);
   assert.doesNotMatch(parsed.renderedMarkdown, /Claude Opus 4\.6 - Anthropic/);
   assert.doesNotMatch(parsed.renderedMarkdown, /Table_title:/);
+});
+
+test("parseSearchToolText should not over-strip normal follow-up answer blocks", () => {
+  const raw = [
+    "### AI 回答",
+    "",
+    "你好！下面是基于你上传图片的总结：",
+    "界面显示的是 VS Code 中 HUGE 插件对话页面。",
+    "",
+    "你可以继续问我插件安装或配置问题。",
+  ].join("\n");
+
+  const parsed = parseSearchToolText(raw);
+  assert.equal(parsed.isError, false);
+  assert.match(parsed.renderedMarkdown, /HUGE 插件对话页面/);
+  assert.match(parsed.renderedMarkdown, /继续问我插件安装或配置问题/);
+  assert.ok(parsed.renderedMarkdown.trim().length > 20);
 });

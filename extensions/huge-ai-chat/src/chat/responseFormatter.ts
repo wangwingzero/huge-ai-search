@@ -41,12 +41,15 @@ function extractSources(raw: string): SearchSource[] {
   const target = sectionMatch?.[1] || raw;
   const sources: SearchSource[] = [];
 
-  const regex = /^\s*\d+\.\s+\[(.+?)\]\((https?:\/\/[^\s)]+)\)\s*$/gm;
+  const regex =
+    /^\s*\d+\.\s+\[((?:\\.|[^\]])+)\]\(\s*(?:<([^>]+)>|(https?:\/\/[^\s)]+))\s*\)\s*$/gm;
   let match: RegExpExecArray | null = null;
   while ((match = regex.exec(target)) !== null) {
+    const title = match[1].trim().replace(/\\([\[\]\\])/g, "$1");
+    const url = (match[2] || match[3] || "").trim();
     sources.push({
-      title: match[1].trim(),
-      url: match[2].trim(),
+      title,
+      url,
     });
   }
   return sources;
@@ -150,7 +153,29 @@ function extractDebugSection(raw: string): string | undefined {
   return tail;
 }
 
+function buildSourcesMarkdown(sources: SearchSource[]): string {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return "";
+  }
+
+  const escapeMarkdownLinkText = (text: string): string =>
+    text.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+
+  const lines = sources.map((source, index) => {
+    const title = (source.title || "").trim() || guessTitleFromUrl(source.url || "");
+    const url = sanitizeHttpUrl(source.url || "");
+    if (!url) {
+      return `${index + 1}. ${title}`;
+    }
+    // Always wrap URL with angle brackets so markdown parsing remains stable
+    // even if URL contains special characters like ")".
+    return `${index + 1}. [${escapeMarkdownLinkText(title)}](<${url}>)`;
+  });
+  return ["### 相关链接", "", ...lines].join("\n");
+}
+
 function stripTrailingSourceText(text: string): string {
+  const original = (text || "").trim();
   const byHeading = text.replace(
     /\n{2,}\s*(?:#{1,6}\s*)?(?:来源|相关链接|sources?)\s*\n[\s\S]*$/i,
     ""
@@ -180,7 +205,18 @@ function stripTrailingSourceText(text: string): string {
   if (keepUntil === paragraphs.length) {
     return byNumberedLinks.trim();
   }
-  return paragraphs.slice(0, keepUntil).join("\n\n").trim();
+
+  const cleaned = paragraphs.slice(0, keepUntil).join("\n\n").trim();
+  // Guardrail: never wipe out the full answer because of an over-eager
+  // source-tail classifier.
+  if (!cleaned) {
+    return original;
+  }
+  if (cleaned.length < 48 && original.length >= 120) {
+    return original;
+  }
+
+  return cleaned;
 }
 
 function isSourceTailParagraph(paragraph: string): boolean {
@@ -208,18 +244,9 @@ function isSourceTailParagraph(paragraph: string): boolean {
   if (lines.some((line) => /^[A-Za-z][A-Za-z0-9 .&'/:()\-]{1,40}$/.test(line))) {
     score += 1;
   }
-  if (
-    lines.length >= 3 &&
-    lines.filter((line) => line.length <= 96).length / lines.length >= 0.7 &&
-    lines.some((line) => /[A-Za-z]/.test(line))
-  ) {
-    score += 1;
-  }
-  if (lines.every((line) => !/[。！？]$/.test(line))) {
-    score += 1;
-  }
 
-  return score >= 3;
+  // Require stronger evidence to classify as source tail.
+  return score >= 4;
 }
 
 function normalizeErrorBody(raw: string): string {
@@ -283,11 +310,13 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
     : mergeSources(extractSources(raw), extractFallbackSources(raw));
   const debugText = extractDebugSection(raw);
   const sessionId = extractSessionId(raw);
+  const sourcesMarkdown = isNoRecord ? "" : buildSourcesMarkdown(sources);
+  const renderedMarkdown = [answer, sourcesMarkdown].filter((part) => part.trim().length > 0).join("\n\n");
 
   return {
     raw,
     answer,
-    renderedMarkdown: answer,
+    renderedMarkdown,
     sources,
     sessionId,
     debugText,
