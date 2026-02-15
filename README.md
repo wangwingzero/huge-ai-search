@@ -1,8 +1,17 @@
-# Huge AI Search MCP Server
+<p align="center">
+  <img src="./resources/icon.png" alt="Huge AI Search" width="220" />
+</p>
 
-🔍 AI 搜索聚合 MCP 服务器 - 获取 HUGE AI Mode 总结的搜索结果
+<h1 align="center">Huge AI Search MCP Server</h1>
 
-[![NPM Version](https://img.shields.io/npm/v/huge-ai-search?color=red)](https://www.npmjs.com/package/huge-ai-search) [![MIT licensed](https://img.shields.io/npm/l/huge-ai-search)](./LICENSE)
+<p align="center">
+  🔍 AI 搜索聚合 MCP 服务器 · 获取 HUGE AI Mode 总结结果与来源
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/huge-ai-search"><img src="https://img.shields.io/npm/v/huge-ai-search?color=red" alt="NPM Version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/huge-ai-search" alt="MIT licensed" /></a>
+</p>
 
 ## ⚠️ 前置条件
 
@@ -73,32 +82,35 @@ npx huge-ai-search --version
 npx huge-ai-search --release-channel
 ```
 
-## 安装
+## Installation
 
-### 使用 npx（推荐）
+> [!NOTE]
+> Windows 默认推荐：先全局安装 `npm i -g huge-ai-search`，MCP 配置使用 `cmd /c huge-ai-search`。  
+> 如需 npx，请使用 `cmd /c npx ...`，不要把 `command` 直接写成 `npx`。
 
-无需安装，直接运行：
+<details>
+<summary><b>Quick Install</b></summary>
+
+使用 npx（免安装）：
 
 ```bash
 npx huge-ai-search
 ```
 
-### 全局安装
+全局安装：
 
 ```bash
 npm install -g huge-ai-search
 ```
 
-> Windows 默认推荐：先全局安装 `npm i -g huge-ai-search`，再用 `cmd /c huge-ai-search`。  
-> 如果必须用 npx，请使用 `cmd /c npx ...` 方式，不要直接把 `command` 写成 `npx`。
+</details>
 
-## MCP 配置
-
-### Cursor
+<details>
+<summary><b>Install in Cursor</b></summary>
 
 编辑 `~/.cursor/mcp.json`（Windows: `%USERPROFILE%\.cursor\mcp.json`）：
 
-**macOS / Linux:**
+macOS / Linux:
 
 ```json
 {
@@ -111,7 +123,7 @@ npm install -g huge-ai-search
 }
 ```
 
-**Windows:**
+Windows:
 
 ```json
 {
@@ -124,35 +136,39 @@ npm install -g huge-ai-search
 }
 ```
 
-### Claude Code
+</details>
 
-**macOS / Linux:**
+<details>
+<summary><b>Install in Claude Code</b></summary>
+
+macOS / Linux:
 
 ```sh
 claude mcp add huge-ai-search -- npx -y huge-ai-search@latest
 ```
 
-**Windows (PowerShell):**
+Windows (PowerShell):
 
 ```powershell
 claude mcp add-json huge-ai-search -s user '{"command":"cmd", "args":["/c", "huge-ai-search"]}'
 ```
 
-**Windows (CMD):**
+Windows (CMD):
 
 ```cmd
 claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c\", \"huge-ai-search\"]}"
 ```
 
-> ⚠️ Windows 推荐直接用 `cmd /c huge-ai-search`，避免直接把 `command` 写成 `npx` 导致启动失败。
-> - PowerShell：用单引号 `'...'` 包裹 JSON，内部双引号无需转义
-> - CMD：用双引号 `"..."` 包裹 JSON，内部双引号需用 `\"` 转义
+PowerShell 用单引号 `'...'` 包裹 JSON；CMD 用双引号 `"..."` 且内部双引号转义为 `\"`。
 
-### Kiro
+</details>
+
+<details>
+<summary><b>Install in Kiro</b></summary>
 
 编辑 `~/.kiro/settings/mcp.json`（Windows: `%USERPROFILE%\.kiro\settings\mcp.json`）：
 
-**macOS / Linux:**
+macOS / Linux:
 
 ```json
 {
@@ -167,7 +183,7 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
 }
 ```
 
-**Windows:**
+Windows:
 
 ```json
 {
@@ -182,16 +198,65 @@ claude mcp add-json huge-ai-search -s user "{\"command\":\"cmd\", \"args\":[\"/c
 }
 ```
 
-### 推荐：Rules / Kiro Steering
+推荐：把仓库根目录 `./huge-ai-search.md` 作为 steering/rules 复用（搜索优先 + 深度追问）。
 
-仓库根目录提供了 `huge-ai-search.md`，内容是“搜索优先 + 深度追问”的完整规范，推荐作为通用规则文件复用：
+</details>
 
-- 在支持 `rules` 的客户端中：直接将 `huge-ai-search.md` 内容加入你的规则配置
-- 在 Kiro 中：推荐作为 `steering` 文档引入，约束代理在代码修改前先搜索并连续追问
+<details>
+<summary><b>Install in Codex CLI</b></summary>
 
-> 该文件路径：`./huge-ai-search.md`
+默认写法：
 
-### 提示词示例：搜索优先原则（深度追问通用版）
+```toml
+[mcp_servers.huge-ai-search]
+command = "npx"
+args = ["-y", "huge-ai-search@latest"]
+```
+
+Windows 推荐：
+
+```toml
+[mcp_servers.huge-ai-search]
+type = "stdio"
+command = "cmd"
+args = ["/c", "huge-ai-search"]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+```
+
+Windows npx 兼容写法：
+
+```toml
+[mcp_servers.huge-ai-search]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "huge-ai-search@latest"]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+```
+
+也可以命令行添加：
+
+```bash
+codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
+```
+
+</details>
+
+<details>
+<summary><b>Other IDEs and Clients (Use Cursor Template)</b></summary>
+
+以下客户端直接复用 Cursor 的 JSON 模板，仅替换配置文件路径：
+
+- Windsurf：`~/.codeium/windsurf/mcp_config.json`（Windows: `%APPDATA%\Codeium\Windsurf\mcp_config.json`）
+- Claude Desktop：macOS `~/Library/Application Support/Claude/claude_desktop_config.json`；Windows `%APPDATA%\Claude\claude_desktop_config.json`
+- VS Code (GitHub Copilot)：项目根目录 `.vscode/mcp.json`（也可命令面板 `MCP: Add Server` 添加）
+- VS Code + Cline：macOS `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`；Windows `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+
+</details>
+
+<details>
+<summary><b>Prompt Template: 搜索优先原则（深度追问通用版）</b></summary>
 
 ```markdown
 # 搜索优先原则（深度追问通用版）
@@ -338,169 +403,7 @@ mcp_huge_ai_search_search({
 > 「先知其不可为，方能有所为」
 ```
 
-### Codex CLI
-
-编辑 `~/.codex/config.toml`：
-
-```toml
-[mcp_servers.huge-ai-search]
-command = "npx"
-args = ["-y", "huge-ai-search@latest"]
-```
-
-Windows 推荐：
-
-```toml
-[mcp_servers.huge-ai-search]
-type = "stdio"
-command = "cmd"
-args = ["/c", "huge-ai-search"]
-startup_timeout_sec = 120
-tool_timeout_sec = 180
-```
-
-Windows 如需坚持 npx（兼容写法）：
-
-```toml
-[mcp_servers.huge-ai-search]
-type = "stdio"
-command = "cmd"
-args = ["/c", "npx", "-y", "huge-ai-search@latest"]
-startup_timeout_sec = 120
-tool_timeout_sec = 180
-```
-
-或使用命令行快捷添加：
-
-```bash
-codex mcp add huge-ai-search -- npx -y huge-ai-search@latest
-```
-
-### Windsurf
-
-编辑 `~/.codeium/windsurf/mcp_config.json`（Windows: `%APPDATA%\Codeium\Windsurf\mcp_config.json`）：
-
-**macOS / Linux:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "npx",
-      "args": ["-y", "huge-ai-search@latest"]
-    }
-  }
-}
-```
-
-**Windows:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "cmd",
-      "args": ["/c", "huge-ai-search"]
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-编辑配置文件：
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-**macOS / Linux:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "npx",
-      "args": ["-y", "huge-ai-search@latest"]
-    }
-  }
-}
-```
-
-**Windows:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "cmd",
-      "args": ["/c", "huge-ai-search"]
-    }
-  }
-}
-```
-
-### VS Code (GitHub Copilot)
-
-在项目根目录创建 `.vscode/mcp.json`：
-
-**macOS / Linux:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "npx",
-      "args": ["-y", "huge-ai-search@latest"]
-    }
-  }
-}
-```
-
-**Windows:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "cmd",
-      "args": ["/c", "huge-ai-search"]
-    }
-  }
-}
-```
-
-或使用命令面板 `MCP: Add Server` 添加。
-
-### VS Code + Cline
-
-编辑 Cline MCP 设置文件：
-- macOS: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-- Windows: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-
-**macOS / Linux:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "npx",
-      "args": ["-y", "huge-ai-search@latest"]
-    }
-  }
-}
-```
-
-**Windows:**
-
-```json
-{
-  "mcpServers": {
-    "huge-ai-search": {
-      "command": "cmd",
-      "args": ["/c", "huge-ai-search"]
-    }
-  }
-}
-```
+</details>
 
 ## 使用方法
 
