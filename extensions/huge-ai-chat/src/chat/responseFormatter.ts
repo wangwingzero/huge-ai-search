@@ -10,8 +10,6 @@ const AUTH_KEYWORDS = [
 ];
 
 const ERROR_PATTERNS = [/##\s*(?:❌\s*)?搜索失败/i, /搜索执行异常/i, /搜索失败/i];
-const SOURCES_BLOCK_START = ":::huge_ai_chat_sources_start:::";
-const SOURCES_BLOCK_END = ":::huge_ai_chat_sources_end:::";
 const NO_RECORD_PATTERNS = [
   "该词条在当前技术语料库和实时搜索中无记录",
   "该词条在当前技术语料库和实时搜索中无可验证记录",
@@ -152,9 +150,16 @@ function extractDebugSection(raw: string): string | undefined {
   return tail;
 }
 
-function buildSourcesDetails(sources: SearchSource[]): string {
-  const encoded = Buffer.from(JSON.stringify(sources), "utf8").toString("base64");
-  return [SOURCES_BLOCK_START, encoded, SOURCES_BLOCK_END].join("\n");
+function stripTrailingSourceText(text: string): string {
+  const byHeading = text.replace(
+    /\n{2,}\s*(?:#{1,6}\s*)?(?:来源|相关链接|sources?)\s*\n[\s\S]*$/i,
+    ""
+  );
+  const byNumberedLinks = byHeading.replace(
+    /\n{2,}(?:\s*\d+\.\s*\[[^\n]+?\]\(\s*<?https?:\/\/[^\n>]+>?\s*\)\s*\n?)+\s*$/gi,
+    ""
+  );
+  return byNumberedLinks.trim();
 }
 
 function normalizeErrorBody(raw: string): string {
@@ -211,7 +216,7 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
     };
   }
 
-  const answer = extractAnswer(raw);
+  const answer = stripTrailingSourceText(extractAnswer(raw));
   const isNoRecord = isNoRecordResponseText(answer) || isNoRecordResponseText(raw);
   const sources = isNoRecord
     ? []
@@ -219,17 +224,10 @@ export function parseSearchToolText(rawText: string): ParsedSearchResponse {
   const debugText = extractDebugSection(raw);
   const sessionId = extractSessionId(raw);
 
-  const chunks: string[] = [];
-  chunks.push(answer);
-
-  if (sources.length > 0) {
-    chunks.push(buildSourcesDetails(sources));
-  }
-
   return {
     raw,
     answer,
-    renderedMarkdown: chunks.join("\n\n").trim(),
+    renderedMarkdown: answer,
     sources,
     sessionId,
     debugText,

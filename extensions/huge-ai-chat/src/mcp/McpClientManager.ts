@@ -27,7 +27,7 @@ interface ResolvedServerCommand {
   command: string;
   args: string[];
   cwd?: string;
-  source: "configured" | "development" | "local-auto" | "npx-auto";
+  source: "configured" | "development" | "local-auto" | "cmd-auto";
 }
 
 const DEFAULT_MCP_ENV: Record<string, string> = {
@@ -135,10 +135,10 @@ export class McpClientManager {
         ready: true,
         detail: `已连接搜索服务（${modeLabel}）：${commandText}`,
         suggestion:
-          resolved.source === "npx-auto"
-            ? "无需手动安装 MCP；首次可能稍慢，后续会复用连接。"
+          resolved.source === "cmd-auto"
+            ? "Windows 已使用 cmd 兼容启动方式，建议先全局安装 huge-ai-search。"
             : resolved.source === "local-auto"
-              ? "已优先复用本地 huge-ai-search 服务，失败时会自动回退到 npx。"
+              ? "已优先复用本地 huge-ai-search 服务，失败时会自动回退到 cmd 兼容命令。"
             : "现在可以直接发送问题，系统会复用当前连接。",
       };
     } catch (error) {
@@ -424,9 +424,9 @@ export class McpClientManager {
     if (process.platform === "win32") {
       return {
         command: "cmd",
-        args: ["/c", "npx", "--yes", "huge-ai-search@latest"],
+        args: ["/c", "huge-ai-search"],
         cwd,
-        source: "npx-auto",
+        source: "cmd-auto",
       };
     }
 
@@ -434,7 +434,7 @@ export class McpClientManager {
       command: "npx",
       args: ["--yes", "huge-ai-search@latest"],
       cwd,
-      source: "npx-auto",
+      source: "cmd-auto",
     };
   }
 
@@ -509,9 +509,9 @@ export class McpClientManager {
         return "开发本地服务";
       case "local-auto":
         return "自动本地服务";
-      case "npx-auto":
+      case "cmd-auto":
       default:
-        return "自动 npx";
+        return process.platform === "win32" ? "自动 cmd 兼容模式" : "自动 npx";
     }
   }
 
