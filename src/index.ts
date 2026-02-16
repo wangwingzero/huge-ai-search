@@ -458,6 +458,10 @@ const MAX_SESSIONS = 5; // 最大会话数
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟超时
 const SESSION_MAX_SEARCHES = 50; // 单会话最大搜索次数（超过后重建）
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 每分钟清理一次
+const PREWARM_ENABLED = process.env.HUGE_AI_SEARCH_PREWARM !== "0";
+const PREWARM_INTERVAL_MS = parsePositiveIntEnv("HUGE_AI_SEARCH_PREWARM_INTERVAL_MS", 45_000);
+const PREWARM_START_DELAY_MS = parsePositiveIntEnv("HUGE_AI_SEARCH_PREWARM_START_DELAY_MS", 600);
+const PREWARM_LANGUAGE = resolvePrewarmLanguage();
 
 let currentSearches = 0;
 const globalCoordinator = new GlobalConcurrencyCoordinator({
@@ -479,6 +483,33 @@ const LOGIN_COOLDOWN_SECONDS = 300; // 5 分钟
 let captchaInProgress = false;
 let captchaWaitPromise: Promise<void> | null = null;
 let captchaWaitResolve: (() => void) | null = null;
+let prewarmInProgress = false;
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const rawValue = (process.env[name] || "").trim();
+  if (!rawValue) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.error(`[PREWARM] 环境变量 ${name}=${rawValue} 非法，回退默认值 ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+function resolvePrewarmLanguage(): string {
+  const fallback = "zh-CN";
+  const supported = new Set(["zh-CN", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR"]);
+  const configured = (process.env.HUGE_AI_SEARCH_PREWARM_LANGUAGE || fallback).trim();
+  if (!supported.has(configured)) {
+    console.error(
+      `[PREWARM] 不支持的语言 HUGE_AI_SEARCH_PREWARM_LANGUAGE=${configured}，回退 ${fallback}`
+    );
+    return fallback;
+  }
+  return configured;
+}
 
 /**
  * 标记 CAPTCHA 处理开始
@@ -671,6 +702,14 @@ setInterval(() => {
   cleanupSessions().catch((err) => console.error(`清理会话失败: ${err}`));
 }, CLEANUP_INTERVAL_MS);
 
+if (PREWARM_ENABLED) {
+  setInterval(() => {
+    runBackgroundPrewarm("interval").catch((err) =>
+      console.error(`[PREWARM] 定时预热失败: ${err}`)
+    );
+  }, PREWARM_INTERVAL_MS);
+}
+
 /**
  * 获取当前会话状态（用于调试）
  */
@@ -681,6 +720,35 @@ function getSessionStats(): string {
     stats.push(`${id.substring(0, 20)}... (${session.searchCount}次, ${age}秒前)`);
   }
   return `会话数: ${sessions.size}/${MAX_SESSIONS}\n${stats.join('\n')}`;
+}
+
+async function runBackgroundPrewarm(trigger: "startup" | "interval"): Promise<void> {
+  if (!PREWARM_ENABLED || prewarmInProgress) {
+    return;
+  }
+  if (currentSearches > 0 || captchaInProgress) {
+    return;
+  }
+
+  prewarmInProgress = true;
+  try {
+    const preferredSessionId =
+      defaultSessionId && sessions.has(defaultSessionId) ? defaultSessionId : undefined;
+    const { sessionId, session } = await getOrCreateSession(preferredSessionId);
+    defaultSessionId = sessionId;
+
+    const warmed = await session.searcher.warmUp(PREWARM_LANGUAGE);
+    if (warmed) {
+      session.lastAccess = Date.now();
+      console.error(`[PREWARM] ${trigger} 成功: session=${sessionId}`);
+    } else {
+      console.error(`[PREWARM] ${trigger} 失败: session=${sessionId}`);
+    }
+  } catch (error) {
+    console.error(`[PREWARM] ${trigger} 异常: ${error}`);
+  } finally {
+    prewarmInProgress = false;
+  }
 }
 
 // 检查是否为登录超时错误
@@ -1234,6 +1302,13 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  if (PREWARM_ENABLED) {
+    setTimeout(() => {
+      runBackgroundPrewarm("startup").catch((error) =>
+        console.error(`[PREWARM] 启动预热失败: ${error}`)
+      );
+    }, PREWARM_START_DELAY_MS);
+  }
   log(
     "INFO",
     `Huge AI Search MCP Server 已启动: name=${MCP_SERVER_NAME}, version=${MCP_SERVER_VERSION}, channel=${MCP_RELEASE_CHANNEL}, 日志文件: ${getLogPath()}`
@@ -1242,6 +1317,10 @@ async function main() {
   log(
     "INFO",
     `均衡配置: local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout(text/image)=${SEARCH_EXECUTION_TIMEOUT_TEXT_MS}/${SEARCH_EXECUTION_TIMEOUT_IMAGE_MS}ms, totalBudget(text/image)=${REQUEST_TOTAL_BUDGET_TEXT_MS}/${REQUEST_TOTAL_BUDGET_IMAGE_MS}ms, globalLockDir=${globalCoordinator.getLockDir()}`
+  );
+  log(
+    "INFO",
+    `预热配置: enabled=${PREWARM_ENABLED}, intervalMs=${PREWARM_INTERVAL_MS}, startupDelayMs=${PREWARM_START_DELAY_MS}, language=${PREWARM_LANGUAGE}`
   );
 }
 

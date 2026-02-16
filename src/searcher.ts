@@ -2046,6 +2046,8 @@ export class AISearcher {
   private browserDataDir: string;
   private timeout: number;
   private headless: boolean;
+  private ensureSessionInFlight: Promise<boolean> | null = null;
+  private warmUpInFlight: Promise<boolean> | null = null;
 
   // Edge 浏览器安装路径（仅支持 Edge）
   private static readonly EDGE_PATHS: Record<string, string[]> = {
@@ -2931,8 +2933,50 @@ export class AISearcher {
    * 确保浏览器会话已启动
    */
   private async ensureSession(language: string = "zh-CN"): Promise<boolean> {
-    if (this.sessionActive && this.page) {
+    if (this.hasUsableSession()) {
       return true;
+    }
+
+    if (this.ensureSessionInFlight) {
+      return this.ensureSessionInFlight;
+    }
+
+    this.ensureSessionInFlight = this.createSession(language);
+    try {
+      return await this.ensureSessionInFlight;
+    } finally {
+      this.ensureSessionInFlight = null;
+    }
+  }
+
+  private async waitForWarmUp(): Promise<void> {
+    if (!this.warmUpInFlight) {
+      return;
+    }
+    try {
+      await this.warmUpInFlight;
+    } catch {
+      // ignore warmup failure and let foreground flow retry normally
+    }
+  }
+
+  private hasUsableSession(): boolean {
+    if (!this.sessionActive || !this.browser || !this.context || !this.page) {
+      return false;
+    }
+    if (!this.browser.isConnected()) {
+      return false;
+    }
+    if (this.page.isClosed()) {
+      return false;
+    }
+    return true;
+  }
+
+  private async createSession(language: string): Promise<boolean> {
+    if (this.sessionActive || this.browser || this.context || this.page) {
+      console.error("检测到残留会话状态，先执行重建清理");
+      await this.close();
     }
 
     console.error("启动新的浏览器会话...");
@@ -2984,6 +3028,62 @@ export class AISearcher {
       console.error(`启动浏览器会话失败: ${error}`);
       await this.close();
       return false;
+    }
+  }
+
+  /**
+   * 后台预热：提前拉起会话并保持连接可用，降低首条请求冷启动延迟。
+   */
+  async warmUp(language: string = "zh-CN"): Promise<boolean> {
+    if (this.warmUpInFlight) {
+      return this.warmUpInFlight;
+    }
+
+    this.warmUpInFlight = (async () => {
+      const warmupLanguage = language || "zh-CN";
+
+      try {
+        if (!(await this.ensureSession(warmupLanguage))) {
+          return false;
+        }
+
+        await this.reloadStorageStateIfNeeded();
+
+        if (!this.page) {
+          return false;
+        }
+
+        const currentUrl = this.page.url();
+        const shouldPrimeAiMode =
+          !this.lastAiAnswer &&
+          (currentUrl === "" ||
+            currentUrl === "about:blank" ||
+            currentUrl.startsWith("chrome-error://"));
+
+        if (shouldPrimeAiMode) {
+          const warmupUrl = this.buildAiModeUrl(warmupLanguage);
+          console.error(`后台预热导航到: ${warmupUrl}`);
+          await this.page.goto(warmupUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.max(8000, Math.min(this.timeout * 1000, 15000)),
+          });
+        } else {
+          await this.page.evaluate("document.readyState");
+        }
+
+        this.lastActivityTime = Date.now();
+        return true;
+      } catch (error) {
+        console.error(`后台预热失败: ${error}`);
+        await this.close();
+        return false;
+      }
+    })();
+
+    try {
+      return await this.warmUpInFlight;
+    } finally {
+      this.warmUpInFlight = null;
     }
   }
 
@@ -3195,9 +3295,26 @@ export class AISearcher {
     let lastAiContainerLength = 0;
     let lastBodyLength = 0;
     let stableCount = 0;
+    let firstContentAt = 0;
+    let lastGrowthAt = 0;
+    let growthEvents = 0;
+    let observedLoading = false;
+    let sawAiContainer = false;
+    let loggedNoSourceWait = false;
     const stableThreshold = 3;
+    const noSourceStableThreshold = 7;
     const checkInterval = 500;
     const minAiContentLength = maxWaitSeconds >= 20 ? 100 : 40;
+    const significantGrowthDelta = 16;
+    const noSourceMinObserveMs = Math.min(
+      7000,
+      Math.max(3000, Math.floor(maxWaitSeconds * 1000 * 0.35))
+    );
+    const noSourceGrowthQuietMs = 2000;
+    const noSourceFallbackObserveMs = Math.min(
+      Math.max(noSourceMinObserveMs + 1800, 4500),
+      Math.max(noSourceMinObserveMs + 500, maxWaitSeconds * 1000 - 1000)
+    );
 
     const loadingKeywordsJson = JSON.stringify(AI_LOADING_KEYWORDS);
 
@@ -3269,6 +3386,37 @@ export class AISearcher {
         const hasAiContainer = info.aiContainerLength > 0;
         const trackingLength = hasAiContainer ? info.aiContainerLength : info.bodyLength;
         const lastTrackingLength = hasAiContainer ? lastAiContainerLength : lastBodyLength;
+        const now = Date.now();
+
+        if (info.aiContainerLength > 0) {
+          sawAiContainer = true;
+        }
+        if (trackingLength > 0 && firstContentAt === 0) {
+          firstContentAt = now;
+        }
+        if (trackingLength - lastTrackingLength >= significantGrowthDelta) {
+          growthEvents++;
+          lastGrowthAt = now;
+          loggedNoSourceWait = false;
+        }
+
+        const elapsedSinceFirstContent =
+          firstContentAt > 0 ? now - firstContentAt : 0;
+        const elapsedSinceLastGrowth =
+          lastGrowthAt > 0 ? now - lastGrowthAt : Number.POSITIVE_INFINITY;
+        const noSourceReady =
+          info.sourceCount === 0 &&
+          sawAiContainer &&
+          trackingLength >= minAiContentLength &&
+          elapsedSinceFirstContent >= noSourceMinObserveMs &&
+          elapsedSinceLastGrowth >= noSourceGrowthQuietMs &&
+          (growthEvents >= 2 || observedLoading || trackingLength >= 900);
+        const noSourceFallbackReady =
+          info.sourceCount === 0 &&
+          sawAiContainer &&
+          trackingLength >= minAiContentLength &&
+          elapsedSinceFirstContent >= noSourceFallbackObserveMs &&
+          elapsedSinceLastGrowth >= noSourceGrowthQuietMs;
 
         // 策略1：检查加载指示器
         const hasLoadingIndicator = await this.checkLoadingIndicators(page);
@@ -3281,33 +3429,47 @@ export class AISearcher {
             console.error(
               `检测到追问建议，AI 输出完成，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}`
             );
-          } else {
-            console.error(
-              `检测到追问建议，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}，按降级策略提前返回`
-            );
+            return true;
           }
-          return true;
+          if (noSourceReady || noSourceFallbackReady) {
+            console.error(
+              `检测到追问建议，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}，满足无来源稳态条件后返回`
+            );
+            return true;
+          }
         }
 
         if (hasLoadingIndicator || info.isLoading) {
+          observedLoading = true;
           stableCount = 0;
+          loggedNoSourceWait = false;
         } else if (trackingLength === lastTrackingLength && trackingLength > 0) {
           if (trackingLength >= minAiContentLength) {
             stableCount++;
-            if (stableCount >= stableThreshold) {
+            const requiredStableCount =
+              info.sourceCount >= 1 ? stableThreshold : noSourceStableThreshold;
+            if (stableCount >= requiredStableCount) {
               if (info.sourceCount >= 1) {
                 console.error(`AI 输出完成，AI容器长度: ${info.aiContainerLength}，body长度: ${info.bodyLength}，来源数: ${info.sourceCount}`);
                 return true;
-              } else {
+              }
+              if (noSourceReady || noSourceFallbackReady) {
                 console.error(
-                  `内容已稳定但来源链接不足 (${info.sourceCount})，AI容器长度: ${info.aiContainerLength}，按降级策略返回以避免超时`
+                  `内容已稳定且满足无来源稳态条件，AI容器长度: ${info.aiContainerLength}，来源数: ${info.sourceCount}`
                 );
                 return true;
+              }
+              if (!loggedNoSourceWait) {
+                console.error(
+                  `内容短暂稳定但来源链接不足 (${info.sourceCount})，继续等待以避免首轮截断（AI容器长度: ${info.aiContainerLength}）`
+                );
+                loggedNoSourceWait = true;
               }
             }
           }
         } else {
           stableCount = 0;
+          loggedNoSourceWait = false;
         }
 
         lastAiContainerLength = info.aiContainerLength;
@@ -5647,6 +5809,16 @@ export class AISearcher {
     maxWaitSeconds: number = 8
   ): Promise<SearchResult> {
     let best = initial;
+    let loggedShortNoSourceWait = false;
+    const normalizedQueryLength = this.normalizeAnswerText(query || "").length;
+    const minNoSourceLength =
+      normalizedQueryLength >= 80
+        ? 300
+        : normalizedQueryLength >= 40
+          ? 220
+          : normalizedQueryLength >= 20
+            ? 170
+            : 130;
 
     for (let i = 0; i < maxWaitSeconds; i++) {
       if (!this.page) return best;
@@ -5672,6 +5844,16 @@ export class AISearcher {
           extracted.sources.length
         )
       ) {
+        const answerLength = extracted.aiAnswer.trim().length;
+        if (extracted.sources.length === 0 && answerLength < minNoSourceLength) {
+          if (!loggedShortNoSourceWait) {
+            console.error(
+              `检测到无来源短回答（长度: ${answerLength}，阈值: ${minNoSourceLength}），继续等待以避免首轮截断`
+            );
+            loggedShortNoSourceWait = true;
+          }
+          continue;
+        }
         console.error(
           `检测到有效文本回答（第 ${i + 1} 秒），长度: ${extracted.aiAnswer.length}`
         );
@@ -5913,6 +6095,8 @@ export class AISearcher {
     language: string = "zh-CN",
     imagePath?: string
   ): Promise<SearchResult> {
+    await this.waitForWarmUp();
+
     const normalizedQuery = query.trim();
     // 确保 imagePath 是字符串类型，否则使用 undefined
     const normalizedImagePath = typeof imagePath === "string" ? imagePath.trim() : undefined;
@@ -6196,7 +6380,7 @@ export class AISearcher {
           this.page,
           normalizedQuery,
           extractedResult,
-          8
+          12
         );
       }
 
@@ -6995,6 +7179,8 @@ export class AISearcher {
    * 在当前会话中继续对话（追问）
    */
   async continueConversation(query: string): Promise<SearchResult> {
+    await this.waitForWarmUp();
+
     console.error(`继续对话: query='${query}'`);
 
     this.lastActivityTime = Date.now();
@@ -7081,7 +7267,7 @@ export class AISearcher {
           this.page,
           query,
           extractedResult,
-          8
+          10
         );
       }
       result.sources = extractedResult.sources;
@@ -7166,6 +7352,8 @@ export class AISearcher {
     this.lastAiAnswer = "";
     this.lastAiAnswerTextOnly = "";
     this.lastWasImageCreation = false;
+    this.ensureSessionInFlight = null;
+    this.warmUpInFlight = null;
 
     if (this.page) {
       try {
