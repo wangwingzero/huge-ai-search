@@ -40,7 +40,8 @@ chrome_browser_temp/
 # Claude Code
 .claude/
 .mcp.json
-D:huge-ai-search.claudeagents/
+CLAUDE.md
+AGENTS.md
 
 # IDE
 .idea/
@@ -50,7 +51,6 @@ D:huge-ai-search.claudeagents/
 .kiro/
 *.swp
 *.swo
-.AGENTS.md
 
 # Testing
 .pytest_cache/
