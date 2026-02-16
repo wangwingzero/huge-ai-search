@@ -438,7 +438,9 @@ interface Session {
 const sessions = new Map<string, Session>();
 let defaultSessionId: string | null = null;
 
-// 默认均衡配置（固定策略，不做用户分档选择）
+// 并发槽限制默认关闭：不再因槽位不足直接拒绝请求
+const CONCURRENCY_SLOT_LIMITS_ENABLED =
+  process.env.HUGE_AI_SEARCH_ENABLE_CONCURRENCY_LIMITS === "1";
 const MAX_CONCURRENT_SEARCHES = 3;
 const MAX_GLOBAL_CONCURRENT_SEARCHES = 4;
 const LOCAL_SLOT_WAIT_TIMEOUT_MS = 6000;
@@ -447,12 +449,12 @@ const GLOBAL_SLOT_LEASE_MS = 180000;
 const GLOBAL_SLOT_HEARTBEAT_MS = 3000;
 const GLOBAL_SLOT_RETRY_BASE_MS = 120;
 const GLOBAL_SLOT_RETRY_MAX_MS = 800;
-const REQUEST_TOTAL_BUDGET_TEXT_MS = 55000;
-const REQUEST_TOTAL_BUDGET_IMAGE_MS = 98000;
-const REQUEST_BUDGET_SAFETY_MS = 3000;
-const REQUEST_MIN_EXECUTION_MS = 8000;
-const SEARCH_EXECUTION_TIMEOUT_TEXT_MS = 50000;
-const SEARCH_EXECUTION_TIMEOUT_IMAGE_MS = 90000;
+const REQUEST_TOTAL_BUDGET_TEXT_MS = 30000;
+const REQUEST_TOTAL_BUDGET_IMAGE_MS = 45000;
+const REQUEST_BUDGET_SAFETY_MS = 2000;
+const REQUEST_MIN_EXECUTION_MS = 5000;
+const SEARCH_EXECUTION_TIMEOUT_TEXT_MS = 28000;
+const SEARCH_EXECUTION_TIMEOUT_IMAGE_MS = 40000;
 const SEARCHER_NAV_TIMEOUT_SECONDS = 30;
 const MAX_SESSIONS = 5; // 最大会话数
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟超时
@@ -464,13 +466,15 @@ const PREWARM_START_DELAY_MS = parsePositiveIntEnv("HUGE_AI_SEARCH_PREWARM_START
 const PREWARM_LANGUAGE = resolvePrewarmLanguage();
 
 let currentSearches = 0;
-const globalCoordinator = new GlobalConcurrencyCoordinator({
-  maxSlots: MAX_GLOBAL_CONCURRENT_SEARCHES,
-  leaseMs: GLOBAL_SLOT_LEASE_MS,
-  heartbeatMs: GLOBAL_SLOT_HEARTBEAT_MS,
-  retryBaseMs: GLOBAL_SLOT_RETRY_BASE_MS,
-  retryMaxMs: GLOBAL_SLOT_RETRY_MAX_MS,
-});
+const globalCoordinator = CONCURRENCY_SLOT_LIMITS_ENABLED
+  ? new GlobalConcurrencyCoordinator({
+      maxSlots: MAX_GLOBAL_CONCURRENT_SEARCHES,
+      leaseMs: GLOBAL_SLOT_LEASE_MS,
+      heartbeatMs: GLOBAL_SLOT_HEARTBEAT_MS,
+      retryBaseMs: GLOBAL_SLOT_RETRY_BASE_MS,
+      retryMaxMs: GLOBAL_SLOT_RETRY_MAX_MS,
+    })
+  : null;
 
 // 登录超时冷却机制
 let loginTimeoutTimestamp: number | null = null;
@@ -565,10 +569,19 @@ async function waitForCaptcha(timeoutMs: number = 5 * 60 * 1000): Promise<boolea
 
 function releaseLocalSearchSlot(): void {
   currentSearches = Math.max(0, currentSearches - 1);
-  console.error(`释放本地搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`);
+  if (CONCURRENCY_SLOT_LIMITS_ENABLED) {
+    console.error(`释放本地搜索槽位，当前并发: ${currentSearches}/${MAX_CONCURRENT_SEARCHES}`);
+  } else {
+    console.error(`请求结束，当前并发: ${currentSearches}`);
+  }
 }
 
 async function acquireLocalSearchSlot(timeoutMs: number): Promise<boolean> {
+  if (!CONCURRENCY_SLOT_LIMITS_ENABLED) {
+    currentSearches++;
+    return true;
+  }
+
   const start = Date.now();
 
   while (currentSearches >= MAX_CONCURRENT_SEARCHES) {
@@ -916,25 +929,27 @@ server.tool(
       }
 
       // 全局并发槽位（跨项目/跨进程）
-      globalLease = await globalCoordinator.acquire(GLOBAL_SLOT_WAIT_TIMEOUT_MS);
-      if (!globalLease) {
+      if (CONCURRENCY_SLOT_LIMITS_ENABLED && globalCoordinator) {
+        globalLease = await globalCoordinator.acquire(GLOBAL_SLOT_WAIT_TIMEOUT_MS);
+        if (!globalLease) {
+          console.error(
+            `全局并发槽位获取超时（${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms），全局上限=${MAX_GLOBAL_CONCURRENT_SEARCHES}`
+          );
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `搜索繁忙：其他项目正在占用全局搜索资源（上限 ${MAX_GLOBAL_CONCURRENT_SEARCHES}）\n` +
+                  `请稍后重试。`,
+              },
+            ],
+          };
+        }
         console.error(
-          `全局并发槽位获取超时（${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms），全局上限=${MAX_GLOBAL_CONCURRENT_SEARCHES}`
+          `获取到全局搜索槽位: ${globalLease.slot}/${MAX_GLOBAL_CONCURRENT_SEARCHES}`
         );
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                `搜索繁忙：其他项目正在占用全局搜索资源（上限 ${MAX_GLOBAL_CONCURRENT_SEARCHES}）\n` +
-                `请稍后重试。`,
-            },
-          ],
-        };
       }
-      console.error(
-        `获取到全局搜索槽位: ${globalLease.slot}/${MAX_GLOBAL_CONCURRENT_SEARCHES}`
-      );
 
       // 获取或创建会话
       // 当客户端显式传入 session_id 时（包括 create_image 场景），优先使用它
@@ -961,13 +976,17 @@ server.tool(
         console.error(
           `请求预算不足，已耗时 ${elapsedBeforeExecutionMs}ms，剩余预算 ${remainingBudgetMs}ms`
         );
+        const timeoutHintSeconds = Math.max(
+          1,
+          Math.round(requestTotalBudgetMs / 1000)
+        );
         return {
           content: [
             {
               type: "text" as const,
               text:
                 `搜索繁忙：本次请求排队耗时较长（${elapsedBeforeExecutionMs}ms），` +
-                `为避免 60 秒超时已提前终止，请直接重试。`,
+                `为避免 ${timeoutHintSeconds} 秒超时已提前终止，请直接重试。`,
             },
           ],
         };
@@ -1281,7 +1300,7 @@ server.tool(
         ],
       };
     } finally {
-      if (globalLease) {
+      if (globalLease && globalCoordinator) {
         try {
           await globalCoordinator.release(globalLease);
           console.error(
@@ -1316,7 +1335,7 @@ async function main() {
   log("INFO", `日志目录: ${getLogDir()}（默认保留 ${getLogRetentionDays()} 天）`);
   log(
     "INFO",
-    `均衡配置: local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout(text/image)=${SEARCH_EXECUTION_TIMEOUT_TEXT_MS}/${SEARCH_EXECUTION_TIMEOUT_IMAGE_MS}ms, totalBudget(text/image)=${REQUEST_TOTAL_BUDGET_TEXT_MS}/${REQUEST_TOTAL_BUDGET_IMAGE_MS}ms, globalLockDir=${globalCoordinator.getLockDir()}`
+    `均衡配置: slotLimits=${CONCURRENCY_SLOT_LIMITS_ENABLED}, local=${MAX_CONCURRENT_SEARCHES}, global=${MAX_GLOBAL_CONCURRENT_SEARCHES}, localWait=${LOCAL_SLOT_WAIT_TIMEOUT_MS}ms, globalWait=${GLOBAL_SLOT_WAIT_TIMEOUT_MS}ms, executionTimeout(text/image)=${SEARCH_EXECUTION_TIMEOUT_TEXT_MS}/${SEARCH_EXECUTION_TIMEOUT_IMAGE_MS}ms, totalBudget(text/image)=${REQUEST_TOTAL_BUDGET_TEXT_MS}/${REQUEST_TOTAL_BUDGET_IMAGE_MS}ms, globalLockDir=${globalCoordinator ? globalCoordinator.getLockDir() : "disabled"}`
   );
   log(
     "INFO",
