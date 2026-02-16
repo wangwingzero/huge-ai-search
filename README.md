@@ -13,14 +13,43 @@
   <a href="./LICENSE"><img src="https://img.shields.io/npm/l/huge-ai-search" alt="MIT licensed" /></a>
 </p>
 
-## 这是什么
+## 版本说明（两部分）
+
+<p align="center">
+  <a href="#第一部分mcp-版"><img src="https://img.shields.io/badge/查看-MCP%20版-ff8c00?style=for-the-badge" alt="MCP 版" /></a>
+  <a href="#第二部分ide-插件版"><img src="https://img.shields.io/badge/查看-IDE%20插件版-2ea44f?style=for-the-badge" alt="IDE 插件版" /></a>
+</p>
+
+### 1) MCP 版（本 README 主要内容）
+
+- 面向 Cursor / Claude Code / Codex 等支持 MCP 的客户端
+- 通过 `huge-ai-search` 工具调用联网搜索
+- NPM：
+  `https://www.npmjs.com/package/huge-ai-search`
+
+### 2) IDE 插件版（兼容 VS Code 扩展生态）
+
+- 扩展名：`hudawang.huge-ai-search`（显示名：HUGE）
+- 可在支持 VS Code 扩展生态的 IDE 中使用（如 VS Code / Cursor / Windsurf 等）
+- 可作为 MCP 之外的 IDE 内使用方式，也可结合你的现有工作流一起使用
+- 插件文档：`extensions/huge-ai-chat/README.md`
+- VS Code Marketplace：
+  `https://marketplace.visualstudio.com/items?itemName=hudawang.huge-ai-search`
+
+## 第一部分：MCP 版
+
+<p align="left">
+  <img src="./resources/MCP-introduce.png" alt="MCP 连续追问示意" width="620" />
+</p>
+
+### 这是什么
 
 - 让 AI 客户端直接调用 `huge-ai-search` 做联网搜索
 - 返回 AI 总结结果 + 来源链接
 - 支持同一会话连续追问（更深入）
 - 支持文本 + 图片搜索（`image_path`）
 
-## 使用前准备
+### 使用前准备
 
 1. 安装 Microsoft Edge（必需）
 2. 首次使用建议先做一次登录验证：
@@ -31,7 +60,7 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 
 3. 中国大陆用户请配置代理（推荐设置 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`）
 
-## Installation
+### Installation
 
 > [!NOTE]
 > Windows 默认推荐：先全局安装 `npm i -g huge-ai-search`，配置里使用 `cmd /c huge-ai-search`。  
@@ -313,7 +342,7 @@ mcp_huge_ai_search_search({
 
 </details>
 
-## 怎么用
+### 怎么用
 
 ### 基本搜索
 
@@ -334,7 +363,7 @@ mcp_huge_ai_search_search({
 
 工具支持传 `image_path`（本地图片绝对路径）进行图文联合搜索。
 
-## 工具参数
+### 工具参数
 
 | 参数 | 必需 | 默认值 | 说明 |
 |---|---|---|---|
@@ -344,7 +373,7 @@ mcp_huge_ai_search_search({
 | `session_id` | ❌ | 自动生成 | 会话 ID（用于多窗口独立追问） |
 | `image_path` | ❌ | - | 本地图片绝对路径（单图） |
 
-## 常见问题
+### 常见问题
 
 ### 1) 提示找不到 Edge
 
@@ -377,6 +406,89 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 - Windows: `C:\\Users\\<用户名>\\.huge-ai-search\\logs\\`
 - macOS: `/Users/<用户名>/.huge-ai-search/logs/`
 - Linux: `/home/<用户名>/.huge-ai-search/logs/`
+
+## 第二部分：IDE 插件版
+
+在支持 VS Code 扩展生态的 IDE 中，可直接安装并在侧边栏使用：
+
+<p align="left">
+  <img src="./resources/IDE-install.png" alt="IDE 插件安装示意" width="620" />
+</p>
+
+<p align="left">
+  <img src="./resources/IDE-introduce.png" alt="HUGE 聊天界面" width="420" />
+</p>
+
+### 适用范围
+
+- 支持 VS Code 扩展生态的 IDE（如 VS Code / Cursor / Windsurf 等）
+- 可作为 MCP 之外的 IDE 内使用方式，也可与你现有工作流结合使用
+
+### 安装前准备
+
+1. 安装 Node.js 18+（建议 LTS）
+2. 确认终端命令可用：`node -v`、`npm -v`、`npx -v`
+3. 确认 Microsoft Edge 可正常打开（登录与浏览器流程会用到）
+
+### 3 分钟快速安装
+
+1. 在扩展市场安装 **HUGE**（扩展 ID：`hudawang.huge-ai-search`）
+2. 打开聊天入口（见下方“如何打开聊天入口”）
+3. 首次按提示登录；也可点击右上角 `浏览器查看` 在浏览器完成登录
+4. 发送一条测试消息，能收到回复即安装成功
+
+Marketplace：
+`https://marketplace.visualstudio.com/items?itemName=hudawang.huge-ai-search`
+
+### 从零安装（详细）
+
+1. 打开 IDE 的扩展市场，搜索并安装 `hudawang.huge-ai-search`
+2. 安装后建议重启 IDE
+3. 打开命令面板，执行 `HUGE: Open Chat`
+4. 首次使用按提示完成登录
+5. 如登录流程未拉起，执行 `HUGE: Run Login Setup`
+6. 在聊天框发送测试问题（如 `hello`），确认可正常返回答案
+
+### 如何打开 `HUGE: Open Chat`
+
+#### 方式 A（推荐）：命令面板
+
+1. 按 `Ctrl+Shift+P`（macOS: `Cmd+Shift+P`）
+2. 输入 `HUGE`
+3. 点击 `HUGE: Open Chat`
+
+#### 方式 B（备用）：活动栏图标
+
+1. 看 VS Code 左侧活动栏
+2. 点击 **HUGE** 图标（插件安装后会出现）
+3. 打开后即可进入聊天面板
+
+#### 方式 C（备用）：编辑器标题按钮
+
+1. 打开任意代码文件
+2. 在编辑器右上角工具区找到 HUGE 图标/入口
+3. 点击进入聊天
+
+### 常见问题（插件版）
+
+1. 命令不可用/服务启动失败  
+   先检查 `node -v`、`npm -v`、`npx -v` 是否可用；Windows 可执行 `npm i -g huge-ai-search` 后重试。
+2. 登录流程打不开  
+   先点 `浏览器查看`，不行再执行 `HUGE: Run Login Setup`。
+3. 网络错误或超时  
+   检查代理环境变量：`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，必要时换网络后重试。
+
+### 主要命令
+
+- `HUGE: Open Chat`
+- `HUGE: New Thread`
+- `HUGE: Run Login Setup`
+- `HUGE: Clear History`
+- `发送到 Huge`
+
+### 详细插件文档
+
+- `extensions/huge-ai-chat/README.md`
 
 ## License
 

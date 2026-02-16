@@ -20,7 +20,6 @@ function isValidPublisherId(value) {
 function main() {
   const requireSecrets = process.argv.includes("--require-secrets");
   const requireVsce = process.argv.includes("--require-vsce");
-  const requireOvsx = process.argv.includes("--require-ovsx");
   const packagePath = path.resolve(process.cwd(), "package.json");
 
   if (!fs.existsSync(packagePath)) {
@@ -52,12 +51,8 @@ function main() {
 
   const missing = [];
   const needsVsce = requireSecrets || requireVsce;
-  const needsOvsx = requireSecrets || requireOvsx;
   if (needsVsce && (!process.env.VSCE_PAT || process.env.VSCE_PAT.trim().length === 0)) {
     missing.push("VSCE_PAT");
-  }
-  if (needsOvsx && (!process.env.OVSX_PAT || process.env.OVSX_PAT.trim().length === 0)) {
-    missing.push("OVSX_PAT");
   }
 
   if (missing.length > 0) {
@@ -67,12 +62,8 @@ function main() {
     );
   }
 
-  if (needsVsce && needsOvsx) {
-    info("publish secrets ok: VSCE_PAT, OVSX_PAT");
-  } else if (needsVsce) {
+  if (needsVsce) {
     info("publish secret ok: VSCE_PAT");
-  } else if (needsOvsx) {
-    info("publish secret ok: OVSX_PAT");
   } else {
     info("no specific secret requirement requested");
   }
