@@ -1454,16 +1454,88 @@
     }
   }
 
+  /**
+   * Populate a .message-body element with content for the given message.
+   */
+  function fillMessageBody(body, message) {
+    if (message.role === "assistant") {
+      body.innerHTML = renderMarkdown(message.content);
+    } else {
+      body.innerHTML = "";
+      const userText = String(message.content || "");
+      if (userText.trim().length > 0) {
+        const textNode = document.createElement("p");
+        textNode.className = "user-message-text";
+        textNode.textContent = userText;
+        body.appendChild(textNode);
+      }
+      const messageAttachments = Array.isArray(message.attachments) ? message.attachments : [];
+      if (messageAttachments.length > 0) {
+        const gallery = document.createElement("div");
+        gallery.className = "message-attachment-gallery";
+        for (const attachment of messageAttachments) {
+          const thumbUrl = sanitizeImageUrl(attachment.thumbDataUrl || "");
+          if (!thumbUrl) { continue; }
+          const fullUrl = sanitizeImageUrl(attachment.originalDataUrl || "") || thumbUrl;
+          const figure = document.createElement("figure");
+          figure.className = "message-image-block";
+          const image = document.createElement("img");
+          image.className = "message-inline-image";
+          image.src = thumbUrl;
+          image.alt = attachment.name || "attachment";
+          image.loading = "lazy";
+          image.referrerPolicy = "no-referrer";
+          image.dataset.imageUrl = fullUrl;
+          figure.appendChild(image);
+          gallery.appendChild(figure);
+        }
+        if (gallery.childElementCount > 0) {
+          body.appendChild(gallery);
+        }
+      }
+    }
+  }
+
+  /**
+   * Create a complete message DOM element for the given message data.
+   */
+  function buildMessageElement(message) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `message ${message.role} ${message.status}`;
+    wrapper.dataset.messageId = message.id;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const roleText = message.role === "user" ? "You" : "HUGE AI";
+    const metaLabel = document.createElement("span");
+    metaLabel.textContent = `${roleText} · ${formatStatusTime(message.createdAt)}`;
+    meta.appendChild(metaLabel);
+
+    const metaActions = document.createElement("div");
+    metaActions.className = "meta-actions";
+    const copyMessageBtn = document.createElement("button");
+    copyMessageBtn.type = "button";
+    copyMessageBtn.className = "mini-btn copy-message-btn";
+    copyMessageBtn.dataset.messageId = message.id;
+    copyMessageBtn.dataset.label = "复制消息";
+    copyMessageBtn.textContent = "复制消息";
+    metaActions.appendChild(copyMessageBtn);
+    meta.appendChild(metaActions);
+    wrapper.appendChild(meta);
+
+    const body = document.createElement("div");
+    body.className = "message-body";
+    fillMessageBody(body, message);
+    wrapper.appendChild(body);
+    return wrapper;
+  }
+
   function renderMessages(forceScrollToBottom) {
     const thread = getActiveThread();
 
-    // Capture scroll state before clearing DOM
-    var savedScrollTop = dom.messages.scrollTop;
-    var nearBottom = dom.messages.scrollHeight - dom.messages.scrollTop - dom.messages.clientHeight < 80;
-
-    dom.messages.innerHTML = "";
-
+    // --- Empty states: full clear ---
     if (!thread) {
+      dom.messages.innerHTML = "";
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "请先创建会话。";
@@ -1473,6 +1545,7 @@
     }
 
     if (!thread.messages.length) {
+      dom.messages.innerHTML = "";
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "发送第一条消息开始对话。";
@@ -1481,83 +1554,52 @@
       return;
     }
 
-    for (const message of thread.messages) {
-      const wrapper = document.createElement("div");
-      wrapper.className = `message ${message.role} ${message.status}`;
-      wrapper.dataset.messageId = message.id;
+    // --- Incremental DOM update (no full innerHTML clear) ---
+    // Only update/add messages that actually changed; untouched elements
+    // stay in the DOM so the browser preserves the user's scroll position.
 
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      const roleText = message.role === "user" ? "You" : "HUGE AI";
+    const expectedIds = new Set(thread.messages.map(m => m.id));
 
-      const metaLabel = document.createElement("span");
-      metaLabel.textContent = `${roleText} · ${formatStatusTime(message.createdAt)}`;
-      meta.appendChild(metaLabel);
-
-      const metaActions = document.createElement("div");
-      metaActions.className = "meta-actions";
-      const copyMessageBtn = document.createElement("button");
-      copyMessageBtn.type = "button";
-      copyMessageBtn.className = "mini-btn copy-message-btn";
-      copyMessageBtn.dataset.messageId = message.id;
-      copyMessageBtn.dataset.label = "复制消息";
-      copyMessageBtn.textContent = "复制消息";
-      metaActions.appendChild(copyMessageBtn);
-      meta.appendChild(metaActions);
-      wrapper.appendChild(meta);
-
-      const body = document.createElement("div");
-      body.className = "message-body";
-      if (message.role === "assistant") {
-        body.innerHTML = renderMarkdown(message.content);
+    // Index existing rendered message elements; remove stale children
+    // (optimistic placeholders, .empty hints, deleted messages).
+    const existingMap = new Map();
+    for (const child of Array.from(dom.messages.children)) {
+      const mid = child.dataset && child.dataset.messageId;
+      if (mid && expectedIds.has(mid)) {
+        existingMap.set(mid, child);
       } else {
-        const userText = String(message.content || "");
-        if (userText.trim().length > 0) {
-          const textNode = document.createElement("p");
-          textNode.className = "user-message-text";
-          textNode.textContent = userText;
-          body.appendChild(textNode);
-        }
-        const messageAttachments = Array.isArray(message.attachments) ? message.attachments : [];
-        if (messageAttachments.length > 0) {
-          const gallery = document.createElement("div");
-          gallery.className = "message-attachment-gallery";
-
-          for (const attachment of messageAttachments) {
-            const thumbUrl = sanitizeImageUrl(attachment.thumbDataUrl || "");
-            if (!thumbUrl) {
-              continue;
-            }
-            const fullUrl = sanitizeImageUrl(attachment.originalDataUrl || "") || thumbUrl;
-
-            const figure = document.createElement("figure");
-            figure.className = "message-image-block";
-
-            const image = document.createElement("img");
-            image.className = "message-inline-image";
-            image.src = thumbUrl;
-            image.alt = attachment.name || "attachment";
-            image.loading = "lazy";
-            image.referrerPolicy = "no-referrer";
-            image.dataset.imageUrl = fullUrl;
-            figure.appendChild(image);
-            gallery.appendChild(figure);
-          }
-
-          if (gallery.childElementCount > 0) {
-            body.appendChild(gallery);
-          }
-        }
+        child.remove();
       }
-      wrapper.appendChild(body);
-      dom.messages.appendChild(wrapper);
     }
 
-    // Only scroll to bottom if: forced (thread switch / initial load), or user was already near bottom
-    if (forceScrollToBottom || nearBottom) {
+    for (const message of thread.messages) {
+      // Quick change-detection token: status + content length.
+      // A "done" message never changes again, so the token is stable.
+      const renderKey = message.status + "|" + (message.content || "").length;
+      const el = existingMap.get(message.id);
+
+      if (el) {
+        // Element already in DOM — only re-render body if something changed
+        if (el.dataset.renderKey !== renderKey) {
+          el.className = `message ${message.role} ${message.status}`;
+          const body = el.querySelector(".message-body");
+          if (body) {
+            fillMessageBody(body, message);
+          }
+          el.dataset.renderKey = renderKey;
+        }
+      } else {
+        // New message — build full element and append
+        const newEl = buildMessageElement(message);
+        newEl.dataset.renderKey = renderKey;
+        dom.messages.appendChild(newEl);
+      }
+    }
+
+    // Scroll only on explicit request (thread switch / initial load).
+    // Normal content updates keep the user's current scroll position.
+    if (forceScrollToBottom) {
       dom.messages.scrollTop = dom.messages.scrollHeight;
-    } else {
-      dom.messages.scrollTop = savedScrollTop;
     }
     renderComposerState();
   }
