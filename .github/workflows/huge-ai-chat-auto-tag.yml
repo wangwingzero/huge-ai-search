@@ -3,7 +3,7 @@
 # 1) This is the default release entrypoint for HUGE extension.
 # 2) After changes land on `main`, this workflow bumps patch version, commits, and pushes tag `huge-ai-chat-v*`.
 # 3) Do NOT call local/manual `vsce publish` in normal cases; rely on tag-triggered `huge-ai-chat.yml`.
-# 4) This workflow intentionally does not dispatch publish workflow manually to avoid duplicate publishes.
+# 4) After tagging, this workflow creates a GitHub Release which triggers `huge-ai-chat.yml` publish.
 #
 name: huge-ai-chat-auto-tag
 
@@ -70,4 +70,15 @@ jobs:
           git tag "$TAG"
           git push origin HEAD:main
           git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="huge-ai-chat-v${VERSION}"
+          COMMIT_MSG="$(git log -1 --skip=1 --pretty=%s)"
+          gh release create "$TAG" \
+            --title "HUGE AI Chat v${VERSION}" \
+            --notes "Auto release from commit: ${COMMIT_MSG}" \
+            --target main
 
