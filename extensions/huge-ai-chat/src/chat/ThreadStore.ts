@@ -6,6 +6,7 @@ import {
   ChatRole,
   ChatThread,
   PersistedState,
+  PersistedStatePatch,
   SearchLanguage,
 } from "./types";
 
@@ -18,6 +19,10 @@ function createId(prefix: string): string {
 
 function cloneState(state: PersistedState): PersistedState {
   return JSON.parse(JSON.stringify(state)) as PersistedState;
+}
+
+function cloneThread(thread: ChatThread): ChatThread {
+  return JSON.parse(JSON.stringify(thread)) as ChatThread;
 }
 
 function normalizeThreadTitle(input: string): string {
@@ -71,6 +76,8 @@ function sanitizeAttachments(input: unknown): ChatAttachment[] | undefined {
 
 export class ThreadStore {
   private state: PersistedState;
+  private persistQueued = false;
+  private persistRunning = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -83,12 +90,50 @@ export class ThreadStore {
       const thread = this.createThreadObject(this.defaultLanguage);
       this.state.threads = [thread];
       this.state.activeThreadId = thread.id;
-      void this.persist();
+      this.schedulePersist();
     }
   }
 
   getState(): PersistedState {
     return cloneState(this.state);
+  }
+
+  getStatePatch(options?: {
+    upsertThreadIds?: string[];
+    removeThreadIds?: string[];
+    reset?: boolean;
+  }): PersistedStatePatch {
+    const upsertIdSet = new Set<string>();
+    for (const id of options?.upsertThreadIds || []) {
+      if (typeof id === "string" && id.trim().length > 0) {
+        upsertIdSet.add(id);
+      }
+    }
+
+    const removeIdSet = new Set<string>();
+    for (const id of options?.removeThreadIds || []) {
+      if (typeof id === "string" && id.trim().length > 0 && !upsertIdSet.has(id)) {
+        removeIdSet.add(id);
+      }
+    }
+
+    const upsertThreads: ChatThread[] = [];
+    for (const id of upsertIdSet) {
+      const thread = this.getThread(id);
+      if (!thread) {
+        continue;
+      }
+      upsertThreads.push(cloneThread(thread));
+    }
+
+    return {
+      version: this.state.version,
+      activeThreadId: this.state.activeThreadId,
+      threadOrder: this.state.threads.map((thread) => thread.id),
+      upsertThreads,
+      removeThreadIds: removeIdSet.size > 0 ? [...removeIdSet] : undefined,
+      reset: options?.reset ? true : undefined,
+    };
   }
 
   getActiveThread(): ChatThread | undefined {
@@ -107,7 +152,7 @@ export class ThreadStore {
     this.state.threads.unshift(thread);
     this.state.activeThreadId = thread.id;
     this.pruneThreads();
-    await this.persist();
+    this.schedulePersist();
     return {
       ...thread,
       messages: [...thread.messages],
@@ -120,7 +165,7 @@ export class ThreadStore {
       return false;
     }
     this.state.activeThreadId = thread.id;
-    await this.persist();
+    this.schedulePersist();
     return true;
   }
 
@@ -140,18 +185,19 @@ export class ThreadStore {
       this.state.activeThreadId = this.state.threads[0].id;
     }
 
-    await this.persist();
+    this.schedulePersist();
     return true;
   }
 
-  async clearHistory(): Promise<void> {
+  async clearHistory(): Promise<ChatThread> {
     const thread = this.createThreadObject(this.defaultLanguage);
     this.state = {
       version: 1,
       activeThreadId: thread.id,
       threads: [thread],
     };
-    await this.persist();
+    this.schedulePersist();
+    return cloneThread(thread);
   }
 
   async setThreadSessionId(threadId: string, sessionId: string | undefined): Promise<boolean> {
@@ -165,7 +211,7 @@ export class ThreadStore {
       delete thread.sessionId;
     }
     thread.updatedAt = Date.now();
-    await this.persist();
+    this.schedulePersist();
     return true;
   }
 
@@ -176,7 +222,7 @@ export class ThreadStore {
     }
     thread.language = language;
     thread.updatedAt = Date.now();
-    await this.persist();
+    this.schedulePersist();
     return true;
   }
 
@@ -213,7 +259,7 @@ export class ThreadStore {
 
     this.reorderThreadToTop(threadId);
     this.pruneThreads();
-    await this.persist();
+    this.schedulePersist();
     return { ...message };
   }
 
@@ -241,7 +287,7 @@ export class ThreadStore {
 
     thread.updatedAt = Date.now();
     this.reorderThreadToTop(threadId);
-    await this.persist();
+    this.schedulePersist();
     return { ...message };
   }
 
@@ -367,7 +413,26 @@ export class ThreadStore {
     };
   }
 
-  private async persist(): Promise<void> {
-    await this.context.globalState.update(STATE_KEY, this.state);
+  private schedulePersist(): void {
+    this.persistQueued = true;
+    queueMicrotask(() => {
+      void this.flushPersistQueue();
+    });
+  }
+
+  private async flushPersistQueue(): Promise<void> {
+    if (this.persistRunning) {
+      return;
+    }
+    this.persistRunning = true;
+    try {
+      while (this.persistQueued) {
+        this.persistQueued = false;
+        const snapshot = cloneState(this.state);
+        await this.context.globalState.update(STATE_KEY, snapshot);
+      }
+    } finally {
+      this.persistRunning = false;
+    }
   }
 }

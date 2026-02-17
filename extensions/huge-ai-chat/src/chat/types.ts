@@ -43,6 +43,15 @@ export interface PersistedState {
   threads: ChatThread[];
 }
 
+export interface PersistedStatePatch {
+  version: 1;
+  activeThreadId: string | null;
+  threadOrder: string[];
+  upsertThreads: ChatThread[];
+  removeThreadIds?: string[];
+  reset?: boolean;
+}
+
 export interface SearchSource {
   title: string;
   url: string;
@@ -99,7 +108,7 @@ export type PanelToHostMessage =
 
 export type HostToPanelMessage =
   | { type: "state/full"; state: PersistedState }
-  | { type: "state/updated"; state: PersistedState }
+  | { type: "state/updated"; patch: PersistedStatePatch }
   | { type: "chat/status"; status: ChatStatusSnapshot }
   | { type: "chat/pending"; threadId: string; messageId: string }
   | { type: "chat/answer"; threadId: string; message: ChatMessage }

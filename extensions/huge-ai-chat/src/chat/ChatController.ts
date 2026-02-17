@@ -112,6 +112,12 @@ interface PersistedImageFile {
   byteLength: number;
 }
 
+interface StateUpdateOptions {
+  upsertThreadIds?: string[];
+  removeThreadIds?: string[];
+  reset?: boolean;
+}
+
 function decodeImageDataUrl(raw: string): ParsedDataUrlImage {
   const value = raw.trim();
   const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
@@ -496,8 +502,8 @@ export class ChatController implements vscode.Disposable {
 
   async createThreadFromCommand(): Promise<void> {
     await this.openChatPanel();
-    await this.store.createThread(this.getConfiguredDefaultLanguage());
-    this.postStateUpdated();
+    const thread = await this.store.createThread(this.getConfiguredDefaultLanguage());
+    this.postStateUpdated({ upsertThreadIds: [thread.id] });
   }
 
   async sendSelectionToNewThread(rawText: string): Promise<void> {
@@ -510,7 +516,7 @@ export class ChatController implements vscode.Disposable {
     await this.openChatPanel();
     const language = this.getConfiguredDefaultLanguage();
     const thread = await this.store.createThread(language);
-    this.postStateUpdated();
+    this.postStateUpdated({ upsertThreadIds: [thread.id] });
     await this.sendMessage(thread.id, text, undefined, undefined, language);
   }
 
@@ -524,8 +530,11 @@ export class ChatController implements vscode.Disposable {
       return;
     }
 
-    await this.store.clearHistory();
-    this.postStateUpdated();
+    const thread = await this.store.clearHistory();
+    this.postStateUpdated({
+      reset: true,
+      upsertThreadIds: [thread.id],
+    });
   }
 
   async runSetupFromCommand(): Promise<void> {
@@ -605,18 +614,21 @@ export class ChatController implements vscode.Disposable {
           payload.language && isSearchLanguage(payload.language)
             ? payload.language
             : this.getConfiguredDefaultLanguage();
-        await this.store.createThread(language);
-        this.postStateUpdated();
+        const thread = await this.store.createThread(language);
+        this.postStateUpdated({ upsertThreadIds: [thread.id] });
         return;
       }
       case "thread/exportMarkdown":
         await this.exportThreadMarkdown(payload.threadId, payload.title, payload.markdown);
         return;
-      case "thread/clearAll":
-        await this.store.clearHistory();
+      case "thread/clearAll": {
+        const thread = await this.store.clearHistory();
         this.pendingThreads.clear();
         this.lastQueryByThread.clear();
-        this.postStateUpdated();
+        this.postStateUpdated({
+          reset: true,
+          upsertThreadIds: [thread.id],
+        });
         this.postStatus(
           "success",
           "历史已清空",
@@ -624,13 +636,16 @@ export class ChatController implements vscode.Disposable {
           "点击新聊天开始新的提问。"
         );
         return;
+      }
       case "thread/switch":
         await this.store.switchThread(payload.threadId);
         this.postStateUpdated();
         return;
       case "thread/delete":
         await this.store.deleteThread(payload.threadId);
-        this.postStateUpdated();
+        this.postStateUpdated({
+          removeThreadIds: [payload.threadId],
+        });
         return;
       case "chat/send":
         await this.sendMessage(
@@ -785,7 +800,7 @@ export class ChatController implements vscode.Disposable {
       return;
     }
 
-    this.postStateUpdated();
+    this.postStateUpdated({ upsertThreadIds: [threadId] });
     this.postMessage({
       type: "chat/pending",
       threadId,
@@ -865,7 +880,7 @@ export class ChatController implements vscode.Disposable {
           content: parsed.renderedMarkdown,
           status: "error",
         });
-        this.postStateUpdated();
+        this.postStateUpdated({ upsertThreadIds: [threadId] });
         this.postMessage({
           type: "chat/error",
           threadId,
@@ -916,7 +931,7 @@ export class ChatController implements vscode.Disposable {
         content: finalMarkdown,
         status: "done",
       });
-      this.postStateUpdated();
+      this.postStateUpdated({ upsertThreadIds: [threadId] });
       this.postMessage({
         type: "chat/answer",
         threadId,
@@ -946,7 +961,7 @@ export class ChatController implements vscode.Disposable {
         content: markdown,
         status: "error",
       });
-      this.postStateUpdated();
+      this.postStateUpdated({ upsertThreadIds: [threadId] });
       this.postMessage({
         type: "chat/error",
         threadId,
@@ -1531,10 +1546,10 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  private postStateUpdated(): void {
+  private postStateUpdated(options?: StateUpdateOptions): void {
     this.postMessage({
       type: "state/updated",
-      state: this.store.getState(),
+      patch: this.store.getStatePatch(options),
     });
   }
 

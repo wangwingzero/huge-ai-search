@@ -139,6 +139,90 @@
     return state.threads.find((thread) => thread.id === state.activeThreadId) || null;
   }
 
+  function applyFullState(nextState) {
+    const candidate = nextState && typeof nextState === "object" ? nextState : null;
+    state.version = candidate && typeof candidate.version === "number" ? candidate.version : 1;
+    state.activeThreadId =
+      candidate &&
+      (typeof candidate.activeThreadId === "string" || candidate.activeThreadId === null)
+        ? candidate.activeThreadId
+        : null;
+    state.threads = candidate && Array.isArray(candidate.threads) ? candidate.threads : [];
+  }
+
+  function applyStatePatch(rawPatch) {
+    if (!rawPatch || typeof rawPatch !== "object") {
+      return;
+    }
+    const patch = rawPatch;
+
+    if (patch.reset) {
+      state.threads = [];
+    }
+
+    const removeIds = Array.isArray(patch.removeThreadIds)
+      ? patch.removeThreadIds.filter((id) => typeof id === "string" && id.length > 0)
+      : [];
+    if (removeIds.length > 0) {
+      const removeSet = new Set(removeIds);
+      state.threads = state.threads.filter((thread) => !removeSet.has(thread.id));
+    }
+
+    const upsertMap = new Map();
+    if (Array.isArray(patch.upsertThreads)) {
+      for (const thread of patch.upsertThreads) {
+        if (!thread || typeof thread !== "object" || typeof thread.id !== "string") {
+          continue;
+        }
+        upsertMap.set(thread.id, thread);
+      }
+    }
+
+    if (upsertMap.size > 0) {
+      const merged = [];
+      for (const thread of state.threads) {
+        const replacement = upsertMap.get(thread.id);
+        if (replacement) {
+          merged.push(replacement);
+          upsertMap.delete(thread.id);
+          continue;
+        }
+        merged.push(thread);
+      }
+      for (const thread of upsertMap.values()) {
+        merged.push(thread);
+      }
+      state.threads = merged;
+    }
+
+    if (Array.isArray(patch.threadOrder) && patch.threadOrder.length > 0) {
+      const byId = new Map(state.threads.map((thread) => [thread.id, thread]));
+      const ordered = [];
+      for (const threadId of patch.threadOrder) {
+        if (typeof threadId !== "string" || !byId.has(threadId)) {
+          continue;
+        }
+        const orderedThread = byId.get(threadId);
+        if (!orderedThread) {
+          continue;
+        }
+        ordered.push(orderedThread);
+        byId.delete(threadId);
+      }
+      for (const thread of byId.values()) {
+        ordered.push(thread);
+      }
+      state.threads = ordered;
+    }
+
+    if (typeof patch.version === "number") {
+      state.version = patch.version;
+    }
+    if (typeof patch.activeThreadId === "string" || patch.activeThreadId === null) {
+      state.activeThreadId = patch.activeThreadId;
+    }
+  }
+
   function normalizeStatus(status) {
     if (!status || typeof status !== "object") {
       return null;
@@ -1865,12 +1949,9 @@
     }
 
     switch (message.type) {
-      case "state/full":
-      case "state/updated": {
+      case "state/full": {
         const previousActiveThreadId = state.activeThreadId;
-        state.version = message.state.version;
-        state.activeThreadId = message.state.activeThreadId;
-        state.threads = Array.isArray(message.state.threads) ? message.state.threads : [];
+        applyFullState(message.state);
         if (
           previousActiveThreadId &&
           previousActiveThreadId !== state.activeThreadId &&
@@ -1880,8 +1961,28 @@
         }
         pruneThreadStatus();
         renderThreads();
-        var threadChanged = message.type === "state/full" || previousActiveThreadId !== state.activeThreadId;
-        renderMessages(threadChanged);
+        renderMessages(true);
+        renderAuthBanner();
+        renderStatusBar();
+        break;
+      }
+      case "state/updated": {
+        const previousActiveThreadId = state.activeThreadId;
+        if (message.patch && typeof message.patch === "object") {
+          applyStatePatch(message.patch);
+        } else if (message.state && typeof message.state === "object") {
+          applyFullState(message.state);
+        }
+        if (
+          previousActiveThreadId &&
+          previousActiveThreadId !== state.activeThreadId &&
+          runtime.attachments.length > 0
+        ) {
+          clearAttachments();
+        }
+        pruneThreadStatus();
+        renderThreads();
+        renderMessages(previousActiveThreadId !== state.activeThreadId);
         renderAuthBanner();
         renderStatusBar();
         break;

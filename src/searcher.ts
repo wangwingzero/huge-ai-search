@@ -338,6 +338,9 @@ const IMAGE_UPLOAD_ATTACHMENT_READY_BASE_MS = 4500;
 const IMAGE_UPLOAD_PROGRESS_BASE_MS = 6500;
 const IMAGE_UPLOAD_SETTLE_BASE_MS = 1000;
 const IMAGE_UPLOAD_ATTACHMENT_READY_MIN_MS = 1600;
+const NAVIGATION_RETRY_ATTEMPTS = 3;
+const NAVIGATION_RETRY_BASE_DELAY_MS = 800;
+const NAVIGATION_RETRY_MAX_DELAY_MS = 3200;
 const IMAGE_UPLOAD_PROGRESS_MIN_MS = 2200;
 const IMAGE_UPLOAD_SETTLE_MIN_MS = 350;
 const IMAGE_UPLOAD_MAX_ATTACHMENT_READY_MS = 30000;
@@ -6087,6 +6090,75 @@ export class AISearcher {
     return "\n\n### 生成图片\n\n" + renumbered.join("\n\n");
   }
 
+  private isRetriableNavigationError(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error))
+      .toLowerCase();
+    const transientKeywords = [
+      "timeout",
+      "timed out",
+      "err_timed_out",
+      "err_connection_refused",
+      "err_connection_reset",
+      "err_connection_closed",
+      "err_connection_aborted",
+      "err_name_not_resolved",
+      "err_network_changed",
+      "err_internet_disconnected",
+      "net::",
+    ];
+    return transientKeywords.some((keyword) => message.includes(keyword));
+  }
+
+  private async gotoWithRetry(url: string, timeoutMs: number): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    if (!this.page || this.page.isClosed()) {
+      return { success: false, error: "页面未初始化或已关闭" };
+    }
+
+    let lastError = "";
+    for (let attempt = 1; attempt <= NAVIGATION_RETRY_ATTEMPTS; attempt++) {
+      if (!this.page || this.page.isClosed()) {
+        return { success: false, error: "页面在导航过程中已关闭" };
+      }
+
+      try {
+        await this.page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: timeoutMs,
+        });
+        if (attempt > 1) {
+          console.error(
+            `页面导航在第 ${attempt} 次尝试后成功: ${url}`
+          );
+        }
+        return { success: true };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        console.error(
+          `页面导航异常（第 ${attempt}/${NAVIGATION_RETRY_ATTEMPTS} 次）: ${lastError}`
+        );
+
+        if (
+          attempt >= NAVIGATION_RETRY_ATTEMPTS ||
+          !this.isRetriableNavigationError(error)
+        ) {
+          break;
+        }
+
+        const backoffMs = Math.min(
+          NAVIGATION_RETRY_MAX_DELAY_MS,
+          NAVIGATION_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))
+        );
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.page.waitForTimeout(backoffMs + jitterMs);
+      }
+    }
+
+    return { success: false, error: lastError || "页面导航失败" };
+  }
+
   /**
    * 执行搜索
    */
@@ -6194,18 +6266,13 @@ export class AISearcher {
         : this.buildUrl(normalizedQuery, language);
       console.error(`导航到: ${url}`);
 
-      try {
-        await this.page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout: this.timeout * 1000,
-        });
-      } catch (gotoError) {
-        console.error(`页面导航异常: ${gotoError}`);
-        if (hasImageInput) {
-          result.error = "图片搜索前页面加载失败，请检查网络后重试。";
-          return result;
-        }
-        return await this.handleCaptcha(url, effectivePrompt);
+      const gotoResult = await this.gotoWithRetry(url, this.timeout * 1000);
+      if (!gotoResult.success) {
+        console.error(`页面导航最终失败: ${gotoResult.error || "未知错误"}`);
+        result.error = hasImageInput
+          ? "图片搜索前页面加载失败（已重试），请检查网络后重试。"
+          : "页面加载失败（已重试），请检查网络或代理后重试。";
+        return result;
       }
 
       // 等待 AI 内容加载
