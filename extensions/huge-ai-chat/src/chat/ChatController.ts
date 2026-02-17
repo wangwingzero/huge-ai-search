@@ -749,6 +749,46 @@ export class ChatController implements vscode.Disposable {
       this.lastQueryByThread.delete(threadId);
     }
 
+    // 立即显示用户消息和 pending 提示，不要等 warmup
+    const userText = this.buildUserMessageContent(text);
+
+    const userMessage = await this.store.addMessage(
+      threadId,
+      "user",
+      userText,
+      "done",
+      normalizedUserAttachments
+    );
+    const pendingMessage = await this.store.addMessage(
+      threadId,
+      "assistant",
+      normalizedImageDataUrl
+        ? "正在调用 HUGE AI 搜索并上传截图，请稍候..."
+        : "正在调用 HUGE AI 搜索，请稍候...",
+      "pending"
+    );
+    if (!userMessage || !pendingMessage) {
+      this.pendingThreads.delete(threadId);
+      return;
+    }
+
+    this.postStateUpdated({ upsertThreadIds: [threadId] });
+    this.postMessage({
+      type: "chat/pending",
+      threadId,
+      messageId: pendingMessage.id,
+    });
+    this.postStatus(
+      "progress",
+      "请求已提交",
+      normalizedImageDataUrl
+        ? `正在准备调用 HUGE AI 搜索服务（附带 ${normalizedImageCount} 张截图${normalizedImageCount > 1 ? "，已自动合并" : ""}）。`
+        : "正在准备调用 HUGE AI 搜索服务。",
+      "可在下方继续输入，当前请求完成后再发送下一条。",
+      threadId
+    );
+
+    // warmup 和图片处理在消息显示之后执行
     const warmupReady = await this.waitForMcpWarmupBeforeSend(threadId);
     if (!warmupReady) {
       this.output.appendLine(
@@ -762,7 +802,20 @@ export class ChatController implements vscode.Disposable {
         persistedImage = await this.persistImageAttachment(normalizedImageDataUrl);
       } catch (error) {
         const errorText = error instanceof Error ? error.message : String(error);
+        const errMarkdown = `## ❌ 图片处理失败\n\n${errorText}`;
+        await this.store.updateMessage(threadId, pendingMessage.id, {
+          content: errMarkdown,
+          status: "error",
+        });
         this.pendingThreads.delete(threadId);
+        this.postStateUpdated({ upsertThreadIds: [threadId] });
+        this.postMessage({
+          type: "chat/error",
+          threadId,
+          message: { ...pendingMessage, content: errMarkdown, status: "error" },
+          error: errorText,
+          canRetry: false,
+        });
         this.postStatus(
           "error",
           "图片处理失败",
@@ -770,51 +823,9 @@ export class ChatController implements vscode.Disposable {
           "请重新截图后粘贴，或改用较小尺寸图片。",
           threadId
         );
-        void vscode.window.showErrorMessage(errorText);
         return;
       }
     }
-
-    const userText = this.buildUserMessageContent(text);
-
-    const userMessage = await this.store.addMessage(
-      threadId,
-      "user",
-      userText,
-      "done",
-      normalizedUserAttachments
-    );
-    const pendingMessage = await this.store.addMessage(
-      threadId,
-      "assistant",
-      persistedImage
-        ? "正在调用 HUGE AI 搜索并上传截图，请稍候..."
-        : "正在调用 HUGE AI 搜索，请稍候...",
-      "pending"
-    );
-    if (!userMessage || !pendingMessage) {
-      this.pendingThreads.delete(threadId);
-      if (persistedImage) {
-        this.scheduleTempImageCleanup(persistedImage.filePath);
-      }
-      return;
-    }
-
-    this.postStateUpdated({ upsertThreadIds: [threadId] });
-    this.postMessage({
-      type: "chat/pending",
-      threadId,
-      messageId: pendingMessage.id,
-    });
-    this.postStatus(
-      "progress",
-      "请求已提交",
-      persistedImage
-        ? `正在准备调用 HUGE AI 搜索服务（附带 ${normalizedImageCount} 张截图${normalizedImageCount > 1 ? "，已自动合并" : ""}）。`
-        : "正在准备调用 HUGE AI 搜索服务。",
-      "可在下方继续输入，当前请求完成后再发送下一条。",
-      threadId
-    );
 
     try {
       const latestThread = this.store.getThread(threadId);
@@ -1514,13 +1525,8 @@ export class ChatController implements vscode.Disposable {
     }
 
     const task = (async () => {
-      this.postStatus(
-        "progress",
-        "正在准备搜索服务",
-        "首次会自动连接 MCP 搜索服务，可能需要几秒。",
-        "无需手动安装 huge-ai-search MCP；连接完成后即可直接提问。"
-      );
-
+      // 静默预热：不立即设置 progress 状态，避免启动时蓝点。
+      // 预热完成或失败后才更新状态。
       const result = await this.mcpManager.warmup();
       if (result.ready) {
         this.postStatus("success", "搜索服务已就绪", result.detail, result.suggestion);

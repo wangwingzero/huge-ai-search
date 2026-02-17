@@ -1875,6 +1875,86 @@
     }
   }
 
+  /**
+   * 乐观渲染：在 DOM 中立即注入用户消息 + pending 助手消息。
+   * 这些元素是纯装饰性的，当 host 发回 state/updated 后
+   * renderMessages() 的 innerHTML = "" 会自动清除它们。
+   */
+  function renderOptimisticMessages(text, attachments, hasImage) {
+    // 如果当前线程已有 "发送第一条消息" 占位符，先清掉
+    var emptyPlaceholder = dom.messages.querySelector(".empty");
+    if (emptyPlaceholder) {
+      emptyPlaceholder.remove();
+    }
+
+    // --- 用户消息气泡 ---
+    var userWrapper = document.createElement("div");
+    userWrapper.className = "message user done";
+
+    var userMeta = document.createElement("div");
+    userMeta.className = "meta";
+    var userMetaLabel = document.createElement("span");
+    userMetaLabel.textContent = "You \u00b7 " + formatStatusTime(Date.now());
+    userMeta.appendChild(userMetaLabel);
+    userWrapper.appendChild(userMeta);
+
+    var userBody = document.createElement("div");
+    userBody.className = "message-body";
+    if (text && text.trim()) {
+      var textNode = document.createElement("p");
+      textNode.className = "user-message-text";
+      textNode.textContent = text;
+      userBody.appendChild(textNode);
+    }
+    if (attachments && attachments.length > 0) {
+      var gallery = document.createElement("div");
+      gallery.className = "message-attachment-gallery";
+      for (var ai = 0; ai < attachments.length; ai++) {
+        var att = attachments[ai];
+        var thumbUrl = att.thumbDataUrl || "";
+        if (!thumbUrl) { continue; }
+        var figure = document.createElement("figure");
+        figure.className = "message-image-block";
+        var img = document.createElement("img");
+        img.className = "message-inline-image";
+        img.src = thumbUrl;
+        img.alt = att.name || "attachment";
+        img.loading = "lazy";
+        figure.appendChild(img);
+        gallery.appendChild(figure);
+      }
+      if (gallery.childElementCount > 0) {
+        userBody.appendChild(gallery);
+      }
+    }
+    userWrapper.appendChild(userBody);
+    dom.messages.appendChild(userWrapper);
+
+    // --- Pending 助手消息气泡 ---
+    var pendingWrapper = document.createElement("div");
+    pendingWrapper.className = "message assistant pending";
+
+    var pendingMeta = document.createElement("div");
+    pendingMeta.className = "meta";
+    var pendingMetaLabel = document.createElement("span");
+    pendingMetaLabel.textContent = "HUGE AI \u00b7 " + formatStatusTime(Date.now());
+    pendingMeta.appendChild(pendingMetaLabel);
+    pendingWrapper.appendChild(pendingMeta);
+
+    var pendingBody = document.createElement("div");
+    pendingBody.className = "message-body";
+    var pendingText = document.createElement("p");
+    pendingText.textContent = hasImage
+      ? "\u6b63\u5728\u8c03\u7528 HUGE AI \u641c\u7d22\u5e76\u4e0a\u4f20\u622a\u56fe\uff0c\u8bf7\u7a0d\u5019..."
+      : "\u6b63\u5728\u8c03\u7528 HUGE AI \u641c\u7d22\uff0c\u8bf7\u7a0d\u5019...";
+    pendingBody.appendChild(pendingText);
+    pendingWrapper.appendChild(pendingBody);
+    dom.messages.appendChild(pendingWrapper);
+
+    // 滚动到底部
+    dom.messages.scrollTop = dom.messages.scrollHeight;
+  }
+
   async function sendCurrentMessage() {
     const thread = getActiveThread();
     if (!thread) {
@@ -1923,6 +2003,10 @@
       attachments: normalizeAttachmentPayload(),
     });
     setHistoryOpen(false);
+
+    // 乐观渲染：立即在 UI 中显示用户消息和 pending 助手消息
+    renderOptimisticMessages(text, runtime.attachments, Boolean(mergedImageDataUrl));
+
     setStatus({
       kind: "progress",
       title: "消息已发送",
@@ -2147,6 +2231,22 @@
       runtime.historyKeyword = "";
       dom.historySearchInput.value = "";
       setHistoryOpen(false);
+
+      // 乐观渲染：立即清空消息区域，显示新线程占位符
+      dom.messages.innerHTML = "";
+      var emptyHint = document.createElement("div");
+      emptyHint.className = "empty";
+      emptyHint.textContent = "发送第一条消息开始对话。";
+      dom.messages.appendChild(emptyHint);
+
+      // 重置输入框状态
+      dom.input.value = "";
+      runtime.slashActiveCommand = null;
+      hideSlashMenu();
+      dom.input.disabled = false;
+      dom.input.placeholder = DEFAULT_INPUT_PLACEHOLDER;
+      dom.sendBtn.disabled = true;
+      dom.input.focus();
     });
 
     dom.clearHistoryBtn.addEventListener("click", () => {

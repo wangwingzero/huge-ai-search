@@ -267,6 +267,11 @@ export class McpClientManager {
       HUGE_AI_SEARCH_IMAGE_DRIVER: "playwright",
       HUGE_AI_SEARCH_IMAGE_UPLOAD_FLOW_BUDGET_MS: "35000",
       HUGE_AI_SEARCH_IMAGE_UPLOAD_TIMEOUT_MULTIPLIER: "1.0",
+      // IDE 插件场景无 60s MCP deadline 限制，放宽服务端执行超时
+      HUGE_AI_SEARCH_TOTAL_BUDGET_TEXT_MS: "55000",
+      HUGE_AI_SEARCH_TOTAL_BUDGET_IMAGE_MS: "100000",
+      HUGE_AI_SEARCH_EXECUTION_TIMEOUT_TEXT_MS: "50000",
+      HUGE_AI_SEARCH_EXECUTION_TIMEOUT_IMAGE_MS: "90000",
     };
     const serverParams: StdioServerParameters = {
       command: resolved.command,
