@@ -104,6 +104,35 @@
           "group": "navigation@99"
         }
       ]
+    },
+    "configuration": {
+      "title": "HUGE",
+      "properties": {
+        "hugeAiChat.grokApiKey": {
+          "type": "string",
+          "default": "sk-1v115w5WA4XUlnxJb3oPzX2kdgPiu2OVTWpMqWDxhEcTyNLk",
+          "description": "Grok 画图 API 密钥（留空则仅使用 Google AI 画图）",
+          "order": 1
+        },
+        "hugeAiChat.grokApiBaseUrl": {
+          "type": "string",
+          "default": "https://aiapi0.getfake.net",
+          "description": "Grok 画图 API 基础 URL",
+          "order": 2
+        },
+        "hugeAiChat.grokApiKeyBackup": {
+          "type": "string",
+          "default": "xinniankuaile",
+          "description": "Grok 画图备用 API 密钥（主 API 失败时自动切换）",
+          "order": 3
+        },
+        "hugeAiChat.grokApiBaseUrlBackup": {
+          "type": "string",
+          "default": "https://grok.jiuuij.de5.net",
+          "description": "Grok 画图备用 API 基础 URL",
+          "order": 4
+        }
+      }
     }
   },
   "scripts": {

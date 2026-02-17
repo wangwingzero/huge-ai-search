@@ -68,6 +68,8 @@ image/
 个人/
 本地测试版本/
 docs/
+grok说明/
+key.json
 
 # VS Code extension build artifacts
 extensions/huge-ai-chat/artifacts/

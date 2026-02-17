@@ -764,7 +764,9 @@ export class ChatController implements vscode.Disposable {
       "assistant",
       normalizedImageDataUrl
         ? "正在调用 HUGE AI 搜索并上传截图，请稍候..."
-        : "正在调用 HUGE AI 搜索，请稍候...",
+        : text.toLowerCase().startsWith("/fastdraw")
+          ? "正在调用 Grok 极速画图，请稍候..."
+          : "正在调用 HUGE AI 搜索，请稍候...",
       "pending"
     );
     if (!userMessage || !pendingMessage) {
@@ -835,7 +837,54 @@ export class ChatController implements vscode.Disposable {
 
       const hasExistingSession = Boolean(latestThread.sessionId);
       const useFollowUp = hasExistingSession;
-      const { createImage, query: searchQuery } = this.parseCreateImagePrefix(text);
+      const { createImage, fastDraw, query: searchQuery } = this.parseCreateImagePrefix(text);
+
+      // ── /fastdraw：Grok-only 画图路径 ──
+      if (fastDraw) {
+        this.postStatus(
+          "progress",
+          "正在调用 Grok 极速画图",
+          "使用 Grok 快速生成图片，不经过 Google AI...",
+          `如果长时间无响应，请检查 Grok API 配置。`,
+          threadId
+        );
+        this.output.appendLine(
+          `[Chat] Grok fastdraw start: thread=${threadId}, query=${searchQuery}`
+        );
+
+        const grokMarkdown = await this.callGrokImageGeneration(searchQuery);
+
+        if (!grokMarkdown) {
+          throw new Error(
+            "Grok 画图失败：未能生成任何图片。请检查 Grok API 密钥和地址配置，或稍后重试。"
+          );
+        }
+
+        this.output.appendLine(`[Chat] Grok fastdraw done: thread=${threadId}`);
+        this.postStatus("progress", "已收到 Grok 画图结果", "正在渲染图片...", undefined, threadId);
+
+        const finalMarkdown = await this.cacheRemoteImagesInMarkdown(grokMarkdown);
+        const message = await this.store.updateMessage(threadId, pendingMessage.id, {
+          content: finalMarkdown,
+          status: "done",
+        });
+        this.postStateUpdated({ upsertThreadIds: [threadId] });
+        this.postMessage({
+          type: "chat/answer",
+          threadId,
+          message: message || { ...pendingMessage, content: finalMarkdown, status: "done" },
+        });
+        this.postStatus(
+          "success",
+          "Grok 画图完成",
+          "图片已生成并渲染完毕。",
+          "可继续输入新的画图描述，或切换到 /draw 使用 Google AI。",
+          threadId
+        );
+        return;
+      }
+
+      // ── /draw 或普通搜索路径 ──
       const effectiveFollowUp = useFollowUp && !createImage;
       this.postStatus(
         "progress",
@@ -860,6 +909,7 @@ export class ChatController implements vscode.Disposable {
       const requestTimeoutMs = persistedImage
         ? SEARCH_REQUEST_TIMEOUT_IMAGE_MS
         : SEARCH_REQUEST_TIMEOUT_TEXT_MS;
+
       const resultText = await withTimeout(
         this.mcpManager.callSearch({
           query: searchQuery,
@@ -870,8 +920,9 @@ export class ChatController implements vscode.Disposable {
           create_image: createImage || undefined,
         }),
         requestTimeoutMs,
-        `请求超时（${Math.floor(requestTimeoutMs / 1000)} 秒），请重试或先执行 “Huge AI Chat: Run Login Setup”。`
+        `请求超时（${Math.floor(requestTimeoutMs / 1000)} 秒），请重试或先执行 "Huge AI Chat: Run Login Setup"。`
       );
+
       this.output.appendLine(`[Chat] Search done: thread=${threadId}`);
       this.postStatus(
         "progress",
@@ -928,6 +979,7 @@ export class ChatController implements vscode.Disposable {
       const markdownBeforeCache = finalNoRecord
         ? this.buildNoRecordMarkdown()
         : parsed.renderedMarkdown;
+
       const finalMarkdown = finalNoRecord
         ? markdownBeforeCache
         : await this.cacheRemoteImagesInMarkdown(markdownBeforeCache);
@@ -1006,23 +1058,176 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 检测 /draw 前缀，返回 { createImage, query }。
-   * 带前缀时 createImage=true，query 为去掉前缀后的部分。
+   * 检测 /draw 或 /fastdraw 前缀，返回 { createImage, fastDraw, query }。
+   * /draw → Google AI 画图；/fastdraw → Grok 极速画图。
    */
-  private parseCreateImagePrefix(text: string): { createImage: boolean; query: string } {
-    const prefixes = ["/draw ", "/draw\t"];
+  private parseCreateImagePrefix(text: string): { createImage: boolean; fastDraw: boolean; query: string } {
     const lower = text.toLowerCase();
-    for (const prefix of prefixes) {
+
+    // /fastdraw 必须在 /draw 之前检测（因为 /fastdraw 以 /draw 为前缀的超集）
+    const fastPrefixes = ["/fastdraw ", "/fastdraw\t"];
+    for (const prefix of fastPrefixes) {
       if (lower.startsWith(prefix) || text.startsWith(prefix)) {
         const query = text.slice(prefix.length).trim();
-        return { createImage: true, query: query || text };
+        return { createImage: true, fastDraw: true, query: query || text };
       }
     }
-    // 也支持前缀后紧跟内容（无空格）的情况
-    if (lower.startsWith("/draw") && text.length > 5) {
-      return { createImage: true, query: text.slice(5).trim() };
+    if (lower.startsWith("/fastdraw") && text.length > 9) {
+      return { createImage: true, fastDraw: true, query: text.slice(9).trim() };
     }
-    return { createImage: false, query: text };
+
+    const drawPrefixes = ["/draw ", "/draw\t"];
+    for (const prefix of drawPrefixes) {
+      if (lower.startsWith(prefix) || text.startsWith(prefix)) {
+        const query = text.slice(prefix.length).trim();
+        return { createImage: true, fastDraw: false, query: query || text };
+      }
+    }
+    if (lower.startsWith("/draw") && text.length > 5) {
+      return { createImage: true, fastDraw: false, query: text.slice(5).trim() };
+    }
+
+    return { createImage: false, fastDraw: false, query: text };
+  }
+
+  /**
+   * Call Grok API to generate images in parallel with Google AI.
+   * Tries primary endpoint first, falls back to backup if primary fails.
+   * Returns markdown string with base64-embedded images, or "" on failure/no config.
+   */
+  private async callGrokImageGeneration(prompt: string): Promise<string> {
+    const config = vscode.workspace.getConfiguration("hugeAiChat");
+    const primaryKey = (config.get<string>("grokApiKey") || "").trim();
+    const primaryUrl = (config.get<string>("grokApiBaseUrl") || "").trim().replace(/\/+$/, "");
+    const backupKey = (config.get<string>("grokApiKeyBackup") || "").trim();
+    const backupUrl = (config.get<string>("grokApiBaseUrlBackup") || "").trim().replace(/\/+$/, "");
+
+    if (!primaryKey && !backupKey) {
+      return "";
+    }
+
+    // Try primary endpoint
+    if (primaryKey && primaryUrl) {
+      const result = await this.callGrokEndpoint(prompt, primaryUrl, primaryKey, "grok-imagine-image", 3);
+      if (result) {
+        return result;
+      }
+    }
+
+    // Fallback to backup endpoint
+    if (backupKey && backupUrl) {
+      this.output.appendLine("[Grok] Primary failed or unconfigured, trying backup...");
+      const result = await this.callGrokEndpoint(prompt, backupUrl, backupKey, "grok-imagine-1.0", 1);
+      if (result) {
+        return result;
+      }
+    }
+
+    return "";
+  }
+
+  /**
+   * Call a single Grok-compatible image generation endpoint.
+   * Returns markdown string with images, or "" on failure.
+   */
+  private async callGrokEndpoint(
+    prompt: string,
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    n: number
+  ): Promise<string> {
+    const endpoint = `${baseUrl}/v1/images/generations`;
+    try {
+      this.output.appendLine(`[Grok] Trying ${baseUrl}: model=${model}, n=${n}`);
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({ prompt, model, n, size: "1024x1024" }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        this.output.appendLine(`[Grok] ${baseUrl} error: HTTP ${response.status} ${body.slice(0, 200)}`);
+        return "";
+      }
+
+      const data = (await response.json()) as { data?: Array<{ url?: string; b64_json?: string }> };
+      const items = data.data || [];
+
+      const imageResults = await Promise.allSettled(
+        items.map(async (item) => {
+          if (item.b64_json && item.b64_json !== "error") {
+            return `data:image/jpeg;base64,${item.b64_json}`;
+          }
+          const url = (item.url || "").trim();
+          if (!url || url === "error") {
+            throw new Error("No valid URL");
+          }
+          return this.downloadImageAsDataUrl(url);
+        })
+      );
+
+      const imageLines: string[] = [];
+      for (const result of imageResults) {
+        if (result.status === "fulfilled" && result.value) {
+          imageLines.push(
+            `![Grok 生成图片 ${imageLines.length + 1}](<${result.value}>)`
+          );
+        }
+      }
+
+      if (imageLines.length === 0) {
+        this.output.appendLine(`[Grok] ${baseUrl}: no images obtained`);
+        return "";
+      }
+
+      this.output.appendLine(`[Grok] ${baseUrl}: got ${imageLines.length} images`);
+      return `### Grok 生成图片\n\n${imageLines.join("\n\n")}`;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.output.appendLine(`[Grok] ${baseUrl} failed: ${msg}`);
+      return "";
+    }
+  }
+
+  /**
+   * Download an image URL and return a base64 data URL.
+   */
+  private async downloadImageAsDataUrl(imageUrl: string): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const response = await fetch(imageUrl, {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        throw new Error("Empty response");
+      }
+      const contentType = (response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+      const buffer = Buffer.from(arrayBuffer);
+      return `data:${contentType};base64,${buffer.toString("base64")}`;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async persistImageAttachment(imageDataUrl: string): Promise<PersistedImageFile> {

@@ -2,7 +2,8 @@
   const vscode = acquireVsCodeApi();
   const DEFAULT_INPUT_PLACEHOLDER = "输入问题，Enter 发送，Shift+Enter 换行（输入 / 查看命令）";
   const SLASH_COMMANDS = [
-    { cmd: "/draw", alias: [], desc: "画图模式 — 使用 Google AI 生成图片", placeholder: "输入图片描述，例如：一只可爱的小狗在草地上奔跑" },
+    { cmd: "/draw", alias: [], desc: "Google 画图 — 使用 Google AI 生成图片", placeholder: "输入图片描述，例如：一只可爱的小狗在草地上奔跑" },
+    { cmd: "/fastdraw", alias: [], desc: "Grok 极速画图 — 直接调用 Grok 生成图片", placeholder: "输入图片描述，Grok 将快速生成..." },
   ];
   const MAX_ATTACHMENTS = 12;
   const ATTACHMENT_THUMB_MAX_EDGE = 320;
@@ -107,6 +108,7 @@
     sendBtn: document.getElementById("sendBtn"),
     attachImageBtn: document.getElementById("attachImageBtn"),
     drawImageBtn: document.getElementById("drawImageBtn"),
+    fastDrawBtn: document.getElementById("fastDrawBtn"),
     slashCmdBtn: document.getElementById("slashCmdBtn"),
     authBanner: document.getElementById("authBanner"),
     authText: document.getElementById("authText"),
@@ -984,7 +986,6 @@
       title: "正在下载图片",
       detail: safeUrl,
       suggestion: "稍后会弹出保存路径并写入本地文件。",
-      threadId: state.activeThreadId || undefined,
       at: Date.now(),
     });
   }
@@ -1837,7 +1838,6 @@
         title: "正在打开来源链接",
         detail: href,
         suggestion: "若浏览器未弹出，可稍后重试或手动复制链接。",
-        threadId: state.activeThreadId || undefined,
         at: Date.now(),
       });
       return;
@@ -2274,6 +2274,14 @@
       dom.historySearchInput.value = "";
       setHistoryOpen(false);
 
+      // 重置全局状态，避免残留的 progress 让新线程显示蓝色指示灯
+      setStatus({
+        kind: "idle",
+        title: "新会话已创建",
+        detail: "发送消息开始搜索。",
+        at: Date.now(),
+      });
+
       // 乐观渲染：立即清空消息区域，显示新线程占位符
       dom.messages.innerHTML = "";
       var emptyHint = document.createElement("div");
@@ -2372,6 +2380,22 @@
           dom.input.value = existing ? "/draw " + existing : "/draw ";
           runtime.slashActiveCommand = drawCmd;
           dom.input.placeholder = drawCmd.placeholder || "输入图片描述...";
+          hideSlashMenu();
+          dom.input.focus();
+          saveDraft();
+          renderComposerState();
+        }
+      });
+    }
+
+    if (dom.fastDrawBtn) {
+      dom.fastDrawBtn.addEventListener("click", () => {
+        const fastDrawCmd = SLASH_COMMANDS.find((c) => c.cmd === "/fastdraw");
+        if (fastDrawCmd) {
+          const existing = dom.input.value.trim();
+          dom.input.value = existing ? "/fastdraw " + existing : "/fastdraw ";
+          runtime.slashActiveCommand = fastDrawCmd;
+          dom.input.placeholder = fastDrawCmd.placeholder || "输入图片描述...";
           hideSlashMenu();
           dom.input.focus();
           saveDraft();
