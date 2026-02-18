@@ -1002,6 +1002,38 @@ select {
   background: rgba(31, 35, 40, 0.9);
 }
 
+/* ── 追问上文指示器 ── */
+.follow-up-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-left: 2px solid var(--gh-accent-fg);
+  border-radius: 4px;
+  background: var(--gh-canvas-default);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--gh-fg-muted);
+  overflow: hidden;
+}
+
+.follow-up-bar.hidden {
+  display: none;
+}
+
+.follow-up-icon {
+  flex-shrink: 0;
+  color: var(--gh-accent-fg);
+  font-size: 13px;
+}
+
+.follow-up-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .composer-box {
   border: 1px solid var(--gh-border-default);
   border-radius: 10px;

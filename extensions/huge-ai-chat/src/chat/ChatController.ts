@@ -886,6 +886,19 @@ export class ChatController implements vscode.Disposable {
 
       // ── /draw 或普通搜索路径 ──
       const effectiveFollowUp = useFollowUp && !createImage;
+
+      // 追问时自动拼接上文语境，确保即使 MCP 会话丢失也能返回相关结果
+      let contextualQuery = searchQuery;
+      if (effectiveFollowUp) {
+        const prevQuery = this.findPreviousUserQuery(latestThread);
+        if (prevQuery) {
+          contextualQuery = this.buildContextualQuery(searchQuery, prevQuery);
+          this.output.appendLine(
+            `[Chat] Follow-up context augmented: "${contextualQuery}"`
+          );
+        }
+      }
+
       this.postStatus(
         "progress",
         "正在调用搜索服务",
@@ -912,7 +925,7 @@ export class ChatController implements vscode.Disposable {
 
       const resultText = await withTimeout(
         this.mcpManager.callSearch({
-          query: searchQuery,
+          query: contextualQuery,
           language: targetLanguage,
           follow_up: effectiveFollowUp,
           session_id: hasExistingSession ? latestThread.sessionId : undefined,
@@ -1055,6 +1068,36 @@ export class ChatController implements vscode.Disposable {
 
   private buildUserMessageContent(text: string): string {
     return text;
+  }
+
+  /**
+   * 从线程历史中找到上一条用户消息（不含当前刚发送的那条）。
+   * 用于追问时构建带上下文的查询。
+   */
+  private findPreviousUserQuery(thread: { messages: Array<{ role: string; content: string; status: string }> }): string | null {
+    const doneUserMessages = thread.messages.filter(
+      (m) => m.role === "user" && m.status === "done"
+    );
+    // 当前刚发送的用户消息是最后一条，取倒数第二条
+    if (doneUserMessages.length < 2) {
+      return null;
+    }
+    const prev = doneUserMessages[doneUserMessages.length - 2];
+    // 去掉 /draw、/fastdraw 前缀
+    const content = prev.content.replace(/^\/(fast)?draw\s+/i, "").trim();
+    return content || null;
+  }
+
+  /**
+   * 为追问查询添加上文语境，确保即使 MCP 会话丢失、回退为新搜索时，
+   * 查询本身也是自包含、有上下文的。
+   */
+  private buildContextualQuery(searchQuery: string, prevQuery: string): string {
+    const maxLen = 120;
+    const truncated = prevQuery.length > maxLen
+      ? prevQuery.slice(0, maxLen) + "…"
+      : prevQuery;
+    return `（接上文「${truncated}」）${searchQuery}`;
   }
 
   /**

@@ -128,6 +128,8 @@
     attachmentList: document.getElementById("attachmentList"),
     clearAttachmentsBtn: document.getElementById("clearAttachmentsBtn"),
     slashMenu: document.getElementById("slashMenu"),
+    followUpBar: document.getElementById("followUpBar"),
+    followUpText: document.getElementById("followUpText"),
   };
 
   function post(message) {
@@ -1769,6 +1771,7 @@
 
     if (!thread) {
       dom.input.placeholder = "请先创建会话，再输入问题。";
+      if (dom.followUpBar) dom.followUpBar.classList.add("hidden");
       return;
     }
     if (runtime.authRunning) {
@@ -1788,6 +1791,32 @@
       return;
     }
     dom.input.placeholder = DEFAULT_INPUT_PLACEHOLDER;
+
+    // ── 追问上文指示器 ──
+    if (dom.followUpBar && dom.followUpText) {
+      const doneMessages = (thread.messages || []).filter(
+        (m) => m.status === "done"
+      );
+      // 至少有一个完整的用户→助手问答对（2 条 done 消息）
+      const hasPriorExchange = doneMessages.length >= 2;
+      if (hasPriorExchange) {
+        const lastDoneUser = [...doneMessages]
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastDoneUser) {
+          const preview =
+            lastDoneUser.content.length > 60
+              ? lastDoneUser.content.slice(0, 60) + "…"
+              : lastDoneUser.content;
+          dom.followUpText.textContent = "追问上文：" + preview;
+          dom.followUpBar.classList.remove("hidden");
+        } else {
+          dom.followUpBar.classList.add("hidden");
+        }
+      } else {
+        dom.followUpBar.classList.add("hidden");
+      }
+    }
   }
 
   function renderAuthBanner() {
