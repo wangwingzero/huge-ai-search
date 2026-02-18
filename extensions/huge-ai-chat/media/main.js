@@ -86,6 +86,7 @@
     slashMenuItems: [],
     slashMenuActiveIndex: 0,
     slashActiveCommand: null,
+    pendingScrollRaf: 0,
   };
 
   const dom = {
@@ -1368,6 +1369,14 @@
     return `${title}\n${messages}`.toLowerCase();
   }
 
+  function renderHistoryButtonState() {
+    dom.historyBtn.disabled = state.threads.length === 0;
+    const historyTooltip = "历史记录";
+    dom.historyBtn.dataset.tooltip = historyTooltip;
+    dom.historyBtn.title = historyTooltip;
+    dom.historyBtn.removeAttribute("data-count");
+  }
+
   function setHistoryOpen(open) {
     runtime.historyOpen = Boolean(open);
     dom.historyPanel.classList.toggle("hidden", !runtime.historyOpen);
@@ -1388,18 +1397,17 @@
   }
 
   function renderThreads() {
+    renderHistoryButtonState();
+    if (!runtime.historyOpen) {
+      return;
+    }
+
     dom.threadList.innerHTML = "";
 
     const keyword = runtime.historyKeyword.trim().toLowerCase();
     const filteredThreads = keyword
       ? state.threads.filter((thread) => getThreadSearchText(thread).includes(keyword))
       : state.threads;
-
-    dom.historyBtn.disabled = state.threads.length === 0;
-    const historyTooltip = "历史记录";
-    dom.historyBtn.dataset.tooltip = historyTooltip;
-    dom.historyBtn.title = historyTooltip;
-    dom.historyBtn.removeAttribute("data-count");
 
     if (!filteredThreads.length) {
       const li = document.createElement("li");
@@ -1533,6 +1541,16 @@
     return wrapper;
   }
 
+  function scheduleMessagesScrollToBottom() {
+    if (runtime.pendingScrollRaf) {
+      return;
+    }
+    runtime.pendingScrollRaf = requestAnimationFrame(() => {
+      runtime.pendingScrollRaf = 0;
+      dom.messages.scrollTop = dom.messages.scrollHeight;
+    });
+  }
+
   function renderMessages(forceScrollToBottom) {
     const thread = getActiveThread();
 
@@ -1602,7 +1620,7 @@
     // Scroll only on explicit request (thread switch / initial load).
     // Normal content updates keep the user's current scroll position.
     if (forceScrollToBottom) {
-      dom.messages.scrollTop = dom.messages.scrollHeight;
+      scheduleMessagesScrollToBottom();
     }
     renderComposerState();
   }
@@ -2023,7 +2041,7 @@
     dom.messages.appendChild(pendingWrapper);
 
     // 滚动到底部
-    dom.messages.scrollTop = dom.messages.scrollHeight;
+    scheduleMessagesScrollToBottom();
   }
 
   async function sendCurrentMessage() {

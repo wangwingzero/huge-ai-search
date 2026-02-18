@@ -488,6 +488,8 @@ select {
   flex-direction: column;
   gap: 12px;
   background: var(--gh-canvas-default);
+  overflow-anchor: auto;
+  contain: layout paint;
 }
 
 .empty {
@@ -503,6 +505,7 @@ select {
   line-height: 1.5;
   font-size: 14px;
   background: var(--gh-canvas-default);
+  contain: layout paint style;
 }
 
 .message.user {
