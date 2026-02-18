@@ -2967,6 +2967,16 @@ export class AISearcher {
     if (!this.sessionActive || !this.browser || !this.context || !this.page) {
       return false;
     }
+    if (this.lastActivityTime > 0) {
+      const idleSeconds = (Date.now() - this.lastActivityTime) / 1000;
+      if (idleSeconds > SESSION_TIMEOUT) {
+        console.error(
+          `会话空闲超时（${idleSeconds.toFixed(0)}秒），将重建浏览器会话`
+        );
+        void this.close();
+        return false;
+      }
+    }
     if (!this.browser.isConnected()) {
       return false;
     }
