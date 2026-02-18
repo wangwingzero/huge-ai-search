@@ -73,7 +73,7 @@ jobs:
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
           TAG="huge-ai-chat-v${VERSION}"
           COMMIT_MSG="$(git log -1 --skip=1 --pretty=%s)"
