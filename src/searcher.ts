@@ -2495,6 +2495,47 @@ export class AISearcher {
     return message.toLowerCase().includes("nodriver import failed");
   }
 
+  /**
+   * 自动安装 nodriver Python 依赖。
+   * 遍历可用的 Python 解释器，执行 `python -m pip install nodriver`。
+   * @returns 成功安装时使用的 Python 命令信息，失败时返回 null。
+   */
+  private async autoInstallNodriver(): Promise<{ command: string; argsPrefix: string[] } | null> {
+    const PIP_INSTALL_TIMEOUT_MS = 120_000; // 2 minutes
+    log("INFO", "检测到 nodriver 未安装，尝试自动安装 (pip install nodriver)...");
+    console.error("[SETUP] nodriver 未安装，正在自动执行 pip install nodriver ...");
+
+    for (const candidate of this.resolvePythonCandidates()) {
+      const installArgs = [...candidate.argsPrefix, "-m", "pip", "install", "nodriver"];
+      log("INFO", `尝试安装: ${candidate.command} ${installArgs.join(" ")}`);
+
+      const result = await this.runProcess(candidate.command, installArgs, PIP_INSTALL_TIMEOUT_MS);
+
+      if (result.error && this.isCommandUnavailableError(result.error)) {
+        continue;
+      }
+
+      // Check if pip itself is missing (e.g. "No module named pip")
+      const combined = `${result.stdout || ""}\n${result.stderr || ""}`;
+      if (combined.toLowerCase().includes("no module named pip")) {
+        log("INFO", `${candidate.command}: pip 不可用，跳过`);
+        continue;
+      }
+
+      if (result.exitCode === 0) {
+        log("INFO", `nodriver 自动安装成功 (${candidate.command})`);
+        console.error("[SETUP] nodriver 安装成功！");
+        return candidate;
+      }
+
+      log("ERROR", `${candidate.command} pip install 失败 (exit=${result.exitCode}): ${combined.slice(0, 300)}`);
+    }
+
+    log("ERROR", "所有 Python 解释器均无法自动安装 nodriver");
+    console.error("[SETUP] nodriver 自动安装失败，请手动执行: pip install nodriver");
+    return null;
+  }
+
   private parseNodriverBridgeResult(stdout: string, stderr: string): NodriverBridgeResult {
     const combinedLines = `${stdout || ""}\n${stderr || ""}`
       .split(/\r?\n/)
@@ -2562,6 +2603,8 @@ export class AISearcher {
     }
 
     let lastErrorMessage = "未执行 nodriver 认证流程";
+    let allFailedDueToNodriverImport = true;
+    let allFailedDueToNoPython = true;
     for (const candidate of this.resolvePythonCandidates()) {
       const fullArgs = [...candidate.argsPrefix, ...baseArgs];
       log(
@@ -2573,9 +2616,16 @@ export class AISearcher {
 
       const execResult = await this.runProcess(candidate.command, fullArgs, timeoutMs);
       const parsed = this.parseNodriverBridgeResult(execResult.stdout, execResult.stderr);
-      const shouldTryNextInterpreter =
-        (execResult.error ? this.isCommandUnavailableError(execResult.error) : false) ||
-        this.isNodriverImportFailure(parsed.message || "");
+      const isCommandMissing = execResult.error ? this.isCommandUnavailableError(execResult.error) : false;
+      const isNodriverMissing = this.isNodriverImportFailure(parsed.message || "");
+      const shouldTryNextInterpreter = isCommandMissing || isNodriverMissing;
+
+      if (!isNodriverMissing) {
+        allFailedDueToNodriverImport = false;
+      }
+      if (!isCommandMissing) {
+        allFailedDueToNoPython = false;
+      }
 
       if (execResult.timedOut) {
         lastErrorMessage = `nodriver 认证超时 (${waitSeconds}s)`;
@@ -2597,6 +2647,33 @@ export class AISearcher {
 
       if (!shouldTryNextInterpreter) {
         break;
+      }
+    }
+
+    if (allFailedDueToNoPython) {
+      lastErrorMessage =
+        "未找到可用的 Python 解释器。请先安装 Python 3：https://www.python.org/downloads/\n" +
+        "安装后再执行: pip install nodriver";
+    } else if (allFailedDueToNodriverImport) {
+      // 自动安装 nodriver 并重试一次
+      const installed = await this.autoInstallNodriver();
+      if (installed) {
+        log("CAPTCHA", "nodriver 自动安装成功，重新执行认证流程...");
+        const retryArgs = [...installed.argsPrefix, ...baseArgs];
+        const retryResult = await this.runProcess(installed.command, retryArgs, timeoutMs);
+        const retryParsed = this.parseNodriverBridgeResult(retryResult.stdout, retryResult.stderr);
+
+        if (!retryResult.timedOut && !retryResult.error &&
+            retryParsed.success && retryParsed.stateSaved && fs.existsSync(storageStatePath)) {
+          log("CAPTCHA", `自动安装后 nodriver 认证成功，状态已保存: ${storageStatePath}`);
+          return retryParsed;
+        }
+        lastErrorMessage = retryParsed.message || retryResult.error || "自动安装 nodriver 后认证仍然失败";
+        log("CAPTCHA", `自动安装后重试失败: ${lastErrorMessage}`);
+      } else {
+        lastErrorMessage =
+          "Python 环境缺少 nodriver 依赖且自动安装失败。请手动执行: pip install nodriver\n" +
+          "安装完成后重新运行 huge-ai-search-setup 即可。";
       }
     }
 
@@ -2787,6 +2864,8 @@ export class AISearcher {
     }
 
     let lastError = "未执行 nodriver 图片搜索";
+    let allImageFailedDueToNodriverImport = true;
+    let allImageFailedDueToNoPython = true;
 
     for (const candidate of this.resolvePythonCandidates()) {
       const args = [...candidate.argsPrefix, ...baseArgs];
@@ -2804,9 +2883,16 @@ export class AISearcher {
       );
 
       const parsedFailureText = `${parsed.error || ""} ${parsed.message || ""}`.trim();
-      const shouldTryNextInterpreter =
-        (execResult.error ? this.isCommandUnavailableError(execResult.error) : false) ||
-        this.isNodriverImportFailure(parsedFailureText);
+      const isCommandMissing = execResult.error ? this.isCommandUnavailableError(execResult.error) : false;
+      const isNodriverMissing = this.isNodriverImportFailure(parsedFailureText);
+      const shouldTryNextInterpreter = isCommandMissing || isNodriverMissing;
+
+      if (!isNodriverMissing) {
+        allImageFailedDueToNodriverImport = false;
+      }
+      if (!isCommandMissing) {
+        allImageFailedDueToNoPython = false;
+      }
 
       if (execResult.timedOut) {
         lastError = `nodriver 图片搜索超时 (${timeoutSeconds}s)`;
@@ -2835,6 +2921,28 @@ export class AISearcher {
 
       if (!shouldTryNextInterpreter) {
         break;
+      }
+    }
+
+    // 自动安装 nodriver 并重试
+    if (!allImageFailedDueToNoPython && allImageFailedDueToNodriverImport) {
+      const installed = await this.autoInstallNodriver();
+      if (installed) {
+        log("INFO", "nodriver 自动安装成功，重新执行图片搜索...");
+        const retryArgs = [...installed.argsPrefix, ...baseArgs];
+        const retryResult = await this.runProcess(installed.command, retryArgs, timeoutMs);
+        const retryParsed = this.parseNodriverImageSearchResult(retryResult.stdout, retryResult.stderr);
+
+        if (!retryResult.timedOut && !retryResult.error && retryParsed.success && retryParsed.aiAnswer.trim()) {
+          result.success = true;
+          result.aiAnswer = retryParsed.aiAnswer.trim();
+          result.sources = retryParsed.sources;
+          result.error = "";
+          log("INFO", `自动安装后 nodriver 图片搜索成功: answerLen=${result.aiAnswer.length}`);
+          return result;
+        }
+        lastError = retryParsed.error || retryParsed.message || "自动安装 nodriver 后图片搜索仍然失败";
+        log("ERROR", `自动安装后重试图片搜索失败: ${lastError}`);
       }
     }
 
