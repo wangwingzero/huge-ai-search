@@ -104,7 +104,10 @@ export type PanelToHostMessage =
   | { type: "chat/retryLast"; threadId: string }
   | { type: "link/open"; href: string }
   | { type: "image/download"; href: string }
-  | { type: "auth/runSetup" };
+  | { type: "auth/runSetup" }
+  | { type: "config/get" }
+  | { type: "config/save"; config: GrokConfig }
+  | { type: "config/openSettings" };
 
 export type HostToPanelMessage =
   | { type: "state/full"; state: PersistedState }
@@ -120,4 +123,15 @@ export type HostToPanelMessage =
       canRetry: boolean;
     }
   | { type: "auth/running" }
-  | { type: "auth/completed"; success: boolean; message: string };
+  | { type: "auth/completed"; success: boolean; message: string }
+  | { type: "config/current"; config: GrokConfig };
+
+export interface GrokConfig {
+  grokApiKey: string;
+  grokApiBaseUrl: string;
+  grokApiModel: string;
+  grokImageCount: number;
+  grokApiKeyBackup: string;
+  grokApiBaseUrlBackup: string;
+  grokApiModelBackup: string;
+}

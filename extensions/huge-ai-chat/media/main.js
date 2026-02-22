@@ -4,6 +4,7 @@
   const SLASH_COMMANDS = [
     { cmd: "/draw", alias: [], desc: "Google 画图 — 使用 Google AI 生成图片", placeholder: "输入图片描述，例如：一只可爱的小狗在草地上奔跑" },
     { cmd: "/fastdraw", alias: [], desc: "Grok 极速画图 — 直接调用 Grok 生成图片", placeholder: "输入图片描述，Grok 将快速生成..." },
+    { cmd: "/config", alias: [], desc: "打开 VS Code 扩展设置页面", placeholder: "按 Enter 打开设置..." },
   ];
   const MAX_ATTACHMENTS = 12;
   const ATTACHMENT_THUMB_MAX_EDGE = 320;
@@ -131,6 +132,19 @@
     slashMenu: document.getElementById("slashMenu"),
     followUpBar: document.getElementById("followUpBar"),
     followUpText: document.getElementById("followUpText"),
+    configBtn: document.getElementById("configBtn"),
+    configPanel: document.getElementById("configPanel"),
+    configBackdrop: document.getElementById("configBackdrop"),
+    configCloseBtn: document.getElementById("configCloseBtn"),
+    configSaveBtn: document.getElementById("configSaveBtn"),
+    configCancelBtn: document.getElementById("configCancelBtn"),
+    cfgKey: document.getElementById("cfgKey"),
+    cfgUrl: document.getElementById("cfgUrl"),
+    cfgModel: document.getElementById("cfgModel"),
+    cfgCount: document.getElementById("cfgCount"),
+    cfgKeyBackup: document.getElementById("cfgKeyBackup"),
+    cfgUrlBackup: document.getElementById("cfgUrlBackup"),
+    cfgModelBackup: document.getElementById("cfgModelBackup"),
   };
 
   function post(message) {
@@ -973,6 +987,40 @@
     dom.imagePreviewImg.src = "";
     dom.imageDownloadBtn.dataset.imageUrl = "";
     runtime.previewImageUrl = "";
+  }
+
+  function openConfigPanel() {
+    post({ type: "config/get" });
+    if (dom.configPanel) dom.configPanel.classList.remove("hidden");
+    if (dom.configBackdrop) dom.configBackdrop.classList.remove("hidden");
+  }
+
+  function closeConfigPanel() {
+    if (dom.configPanel) dom.configPanel.classList.add("hidden");
+    if (dom.configBackdrop) dom.configBackdrop.classList.add("hidden");
+  }
+
+  function applyConfigToForm(config) {
+    if (!config || typeof config !== "object") return;
+    if (dom.cfgKey) dom.cfgKey.value = config.grokApiKey || "";
+    if (dom.cfgUrl) dom.cfgUrl.value = config.grokApiBaseUrl || "";
+    if (dom.cfgModel) dom.cfgModel.value = config.grokApiModel || "";
+    if (dom.cfgCount) dom.cfgCount.value = String(config.grokImageCount || 1);
+    if (dom.cfgKeyBackup) dom.cfgKeyBackup.value = config.grokApiKeyBackup || "";
+    if (dom.cfgUrlBackup) dom.cfgUrlBackup.value = config.grokApiBaseUrlBackup || "";
+    if (dom.cfgModelBackup) dom.cfgModelBackup.value = config.grokApiModelBackup || "";
+  }
+
+  function collectConfigFromForm() {
+    return {
+      grokApiKey: (dom.cfgKey ? dom.cfgKey.value : "").trim(),
+      grokApiBaseUrl: (dom.cfgUrl ? dom.cfgUrl.value : "").trim(),
+      grokApiModel: (dom.cfgModel ? dom.cfgModel.value : "").trim(),
+      grokImageCount: Math.max(1, Math.min(4, parseInt(dom.cfgCount ? dom.cfgCount.value : "1", 10) || 1)),
+      grokApiKeyBackup: (dom.cfgKeyBackup ? dom.cfgKeyBackup.value : "").trim(),
+      grokApiBaseUrlBackup: (dom.cfgUrlBackup ? dom.cfgUrlBackup.value : "").trim(),
+      grokApiModelBackup: (dom.cfgModelBackup ? dom.cfgModelBackup.value : "").trim(),
+    };
   }
 
   function requestImageDownload(rawUrl) {
@@ -2051,6 +2099,18 @@
     }
 
     const text = dom.input.value.trim();
+
+    // Intercept /config command
+    if (text.toLowerCase() === "/config") {
+      dom.input.value = "";
+      runtime.slashActiveCommand = null;
+      hideSlashMenu();
+      saveDraft();
+      renderComposerState();
+      post({ type: "config/openSettings" });
+      return;
+    }
+
     const imageCount = Array.isArray(runtime.attachments) ? runtime.attachments.length : 0;
     if (!text && imageCount <= 0) {
       return;
@@ -2203,6 +2263,9 @@
           at: Date.now(),
         });
         renderAuthBanner();
+        break;
+      case "config/current":
+        applyConfigToForm(message.config);
         break;
       default:
         break;
@@ -2573,9 +2636,56 @@
       });
     }
 
+    if (dom.configBtn) {
+      dom.configBtn.addEventListener("click", () => {
+        openConfigPanel();
+      });
+    }
+
+    if (dom.configCloseBtn) {
+      dom.configCloseBtn.addEventListener("click", () => {
+        closeConfigPanel();
+      });
+    }
+
+    if (dom.configCancelBtn) {
+      dom.configCancelBtn.addEventListener("click", () => {
+        closeConfigPanel();
+      });
+    }
+
+    if (dom.configBackdrop) {
+      dom.configBackdrop.addEventListener("click", () => {
+        closeConfigPanel();
+      });
+    }
+
+    if (dom.configSaveBtn) {
+      dom.configSaveBtn.addEventListener("click", () => {
+        const config = collectConfigFromForm();
+        post({ type: "config/save", config });
+        closeConfigPanel();
+      });
+    }
+
+    if (dom.configPanel) {
+      dom.configPanel.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLAnchorElement)) return;
+        const href = target.dataset.href || "";
+        if (!href) return;
+        event.preventDefault();
+        post({ type: "link/open", href });
+      });
+    }
+
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && dom.imagePreview && !dom.imagePreview.classList.contains("hidden")) {
         closeImagePreview();
+        return;
+      }
+      if (event.key === "Escape" && dom.configPanel && !dom.configPanel.classList.contains("hidden")) {
+        closeConfigPanel();
         return;
       }
       if (event.key === "Escape" && runtime.historyOpen) {

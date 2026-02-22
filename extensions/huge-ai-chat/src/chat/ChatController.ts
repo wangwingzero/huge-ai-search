@@ -10,6 +10,7 @@ import { isAuthRelatedError, isNoRecordResponseText, parseSearchToolText } from 
 import {
   ChatAttachment,
   ChatStatusKind,
+  GrokConfig,
   HostToPanelMessage,
   PanelToHostMessage,
   SearchLanguage,
@@ -324,7 +325,14 @@ function isValidPanelToHostMessage(payload: unknown): payload is PanelToHostMess
     case "browser/open":
     case "thread/clearAll":
     case "auth/runSetup":
+    case "config/get":
+    case "config/openSettings":
       return true;
+    case "config/save":
+      return (
+        typeof (candidate as { config?: unknown }).config === "object" &&
+        (candidate as { config?: unknown }).config !== null
+      );
     case "thread/create":
       return candidate.language === undefined || isSearchLanguage(candidate.language);
     case "thread/exportMarkdown":
@@ -669,6 +677,15 @@ export class ChatController implements vscode.Disposable {
       case "auth/runSetup":
         await this.runSetupFlow();
         return;
+      case "config/get":
+        this.handleConfigGet();
+        return;
+      case "config/save":
+        await this.handleConfigSave(payload.config);
+        return;
+      case "config/openSettings":
+        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:hudawang.huge-ai-search");
+        return;
       default:
         return;
     }
@@ -856,7 +873,7 @@ export class ChatController implements vscode.Disposable {
 
         if (!grokMarkdown) {
           throw new Error(
-            "Grok 画图失败：未能生成任何图片。请检查 Grok API 密钥和地址配置，或稍后重试。"
+            "Grok 画图失败：API 调用未返回图片。请检查 API Key 和 Base URL 是否正确，或稍后重试。"
           );
         }
 
@@ -1142,16 +1159,23 @@ export class ChatController implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration("hugeAiChat");
     const primaryKey = (config.get<string>("grokApiKey") || "").trim();
     const primaryUrl = (config.get<string>("grokApiBaseUrl") || "").trim().replace(/\/+$/, "");
+    const primaryModel = (config.get<string>("grokApiModel") || "grok-2-image").trim();
+    const imageCount = Math.max(1, Math.min(4, config.get<number>("grokImageCount") || 1));
     const backupKey = (config.get<string>("grokApiKeyBackup") || "").trim();
     const backupUrl = (config.get<string>("grokApiBaseUrlBackup") || "").trim().replace(/\/+$/, "");
+    const backupModel = (config.get<string>("grokApiModelBackup") || "").trim() || primaryModel;
 
     if (!primaryKey && !backupKey) {
-      return "";
+      throw new Error(
+        "尚未配置 Grok 画图 API。请在 VS Code 设置中搜索 \"hugeAiChat.grokApiKey\"，填入你的 API Key 和 Base URL 后重试。\n\n" +
+        "官方 API：https://api.x.ai（需要 xAI API Key）\n" +
+        "也可使用兼容 OpenAI images/generations 接口的第三方服务。"
+      );
     }
 
     // Try primary endpoint
     if (primaryKey && primaryUrl) {
-      const result = await this.callGrokEndpoint(prompt, primaryUrl, primaryKey, "grok-imagine-image", 3);
+      const result = await this.callGrokEndpoint(prompt, primaryUrl, primaryKey, primaryModel, imageCount);
       if (result) {
         return result;
       }
@@ -1160,7 +1184,7 @@ export class ChatController implements vscode.Disposable {
     // Fallback to backup endpoint
     if (backupKey && backupUrl) {
       this.output.appendLine("[Grok] Primary failed or unconfigured, trying backup...");
-      const result = await this.callGrokEndpoint(prompt, backupUrl, backupKey, "grok-imagine-1.0", 1);
+      const result = await this.callGrokEndpoint(prompt, backupUrl, backupKey, backupModel, imageCount);
       if (result) {
         return result;
       }
@@ -1478,6 +1502,48 @@ export class ChatController implements vscode.Disposable {
       success: result.success,
       message: result.message,
     };
+  }
+
+  private handleConfigGet(): void {
+    const cfg = vscode.workspace.getConfiguration("hugeAiChat");
+    const config: GrokConfig = {
+      grokApiKey: cfg.get<string>("grokApiKey") || "",
+      grokApiBaseUrl: cfg.get<string>("grokApiBaseUrl") || "",
+      grokApiModel: cfg.get<string>("grokApiModel") || "",
+      grokImageCount: cfg.get<number>("grokImageCount") || 1,
+      grokApiKeyBackup: cfg.get<string>("grokApiKeyBackup") || "",
+      grokApiBaseUrlBackup: cfg.get<string>("grokApiBaseUrlBackup") || "",
+      grokApiModelBackup: cfg.get<string>("grokApiModelBackup") || "",
+    };
+    this.postMessage({ type: "config/current", config });
+  }
+
+  private async handleConfigSave(config: GrokConfig): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("hugeAiChat");
+    const target = vscode.ConfigurationTarget.Global;
+    try {
+      await cfg.update("grokApiKey", config.grokApiKey || undefined, target);
+      await cfg.update("grokApiBaseUrl", config.grokApiBaseUrl || undefined, target);
+      await cfg.update("grokApiModel", config.grokApiModel || undefined, target);
+      await cfg.update("grokImageCount", config.grokImageCount || undefined, target);
+      await cfg.update("grokApiKeyBackup", config.grokApiKeyBackup || undefined, target);
+      await cfg.update("grokApiBaseUrlBackup", config.grokApiBaseUrlBackup || undefined, target);
+      await cfg.update("grokApiModelBackup", config.grokApiModelBackup || undefined, target);
+      this.postStatus(
+        "success",
+        "配置已保存",
+        "Grok 画图 API 配置已更新，立即生效。",
+        "使用 /fastdraw + 描述 来调用 Grok 画图。"
+      );
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      this.postStatus(
+        "error",
+        "配置保存失败",
+        errorText,
+        "请检查 VS Code 设置权限后重试。"
+      );
+    }
   }
 
   private openBrowserView(): void {

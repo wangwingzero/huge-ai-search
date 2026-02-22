@@ -110,27 +110,47 @@
       "properties": {
         "hugeAiChat.grokApiKey": {
           "type": "string",
-          "default": "sk-1v115w5WA4XUlnxJb3oPzX2kdgPiu2OVTWpMqWDxhEcTyNLk",
-          "description": "Grok 画图 API 密钥（留空则仅使用 Google AI 画图）",
+          "default": "",
+          "description": "Grok 画图 API 密钥（留空则 /fastdraw 不可用，仍可用 /draw 走 Google AI）",
           "order": 1
         },
         "hugeAiChat.grokApiBaseUrl": {
           "type": "string",
-          "default": "https://aiapi0.getfake.net",
-          "description": "Grok 画图 API 基础 URL",
+          "default": "",
+          "description": "Grok 画图 API 基础 URL（例如 https://api.x.ai 或兼容的中转地址）",
           "order": 2
+        },
+        "hugeAiChat.grokApiModel": {
+          "type": "string",
+          "default": "grok-2-image",
+          "description": "Grok 画图模型名称（例如 grok-2-image、grok-imagine-image）",
+          "order": 3
+        },
+        "hugeAiChat.grokImageCount": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "每次 /fastdraw 生成的图片数量（1-4）",
+          "order": 4
         },
         "hugeAiChat.grokApiKeyBackup": {
           "type": "string",
-          "default": "xinniankuaile",
-          "description": "Grok 画图备用 API 密钥（主 API 失败时自动切换）",
-          "order": 3
+          "default": "",
+          "description": "Grok 画图备用 API 密钥（主 API 失败时自动切换，可选）",
+          "order": 5
         },
         "hugeAiChat.grokApiBaseUrlBackup": {
           "type": "string",
-          "default": "https://grok.jiuuij.de5.net",
-          "description": "Grok 画图备用 API 基础 URL",
-          "order": 4
+          "default": "",
+          "description": "Grok 画图备用 API 基础 URL（可选）",
+          "order": 6
+        },
+        "hugeAiChat.grokApiModelBackup": {
+          "type": "string",
+          "default": "",
+          "description": "Grok 画图备用模型名称（留空则使用主模型名称）",
+          "order": 7
         }
       }
     }

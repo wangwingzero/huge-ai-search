@@ -67,6 +67,13 @@
           title="清空历史"
           data-tooltip="清空历史"
         >⌫</button>
+        <button
+          id="configBtn"
+          class="btn icon-btn"
+          aria-label="画图配置"
+          title="画图 API 配置"
+          data-tooltip="画图 API 配置"
+        >⚙</button>
       </div>
     </header>
 
@@ -82,6 +89,37 @@
             <input id="historySearchInput" type="text" placeholder="搜索历史记录..." />
           </div>
           <ul id="threadList" class="thread-list history-list"></ul>
+        </div>
+
+        <div id="configBackdrop" class="config-backdrop hidden"></div>
+        <div id="configPanel" class="config-panel hidden" role="dialog" aria-label="画图 API 配置">
+          <div class="config-head">
+            <div class="config-title">画图 API 配置</div>
+            <button id="configCloseBtn" class="config-close" type="button">×</button>
+          </div>
+          <div class="config-body">
+            <div class="config-section">
+              <div class="config-section-title">主要 API</div>
+              <label class="config-label">API Key<input id="cfgKey" type="password" class="config-input" placeholder="sk-..." /></label>
+              <label class="config-label">Base URL<input id="cfgUrl" type="text" class="config-input" placeholder="https://api.x.ai" /></label>
+              <label class="config-label">模型名称<input id="cfgModel" type="text" class="config-input" placeholder="grok-2-image" /></label>
+              <label class="config-label">图片数量<input id="cfgCount" type="number" class="config-input" min="1" max="4" value="1" /></label>
+            </div>
+            <div class="config-section">
+              <div class="config-section-title">备用 API（可选）</div>
+              <label class="config-label">备用 API Key<input id="cfgKeyBackup" type="password" class="config-input" placeholder="留空则不启用备用" /></label>
+              <label class="config-label">备用 Base URL<input id="cfgUrlBackup" type="text" class="config-input" placeholder="https://..." /></label>
+              <label class="config-label">备用模型名称<input id="cfgModelBackup" type="text" class="config-input" placeholder="留空则跟随主模型" /></label>
+            </div>
+            <div class="config-actions">
+              <button id="configSaveBtn" class="btn primary">保存</button>
+              <button id="configCancelBtn" class="btn">取消</button>
+            </div>
+            <div class="config-hint">
+              配置保存后立即生效。使用 /fastdraw + 描述 来调用 Grok 画图。<br>
+              官方 API：<a href="#" data-href="https://console.x.ai">https://console.x.ai</a> 获取 Key，Base URL 填 https://api.x.ai
+            </div>
+          </div>
         </div>
 
         <div id="authBanner" class="auth-banner hidden">
