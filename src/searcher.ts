@@ -1508,6 +1508,7 @@ async def main():
     parser.add_argument("--timeout-seconds", type=int, default=85)
     parser.add_argument("--proxy", default="")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--browser-path", default="")
     args = parser.parse_args()
 
     image_path = str(Path(args.image_path).resolve())
@@ -1572,6 +1573,7 @@ async def main():
             sandbox=use_sandbox,
             browser_args=browser_args,
             user_data_dir=str(user_data_dir),
+            browser_executable_path=args.browser_path or None,
         )
 
         browser = await uc.start(config=config)
@@ -1830,6 +1832,7 @@ async def main() -> int:
     parser.add_argument("--wait-seconds", type=int, default=300)
     parser.add_argument("--proxy", default="")
     parser.add_argument("--mode", choices=["setup", "browse"], default="setup")
+    parser.add_argument("--browser-path", default="")
     args = parser.parse_args()
 
     try:
@@ -1869,6 +1872,7 @@ async def main() -> int:
             sandbox=use_sandbox,
             browser_args=browser_args,
             user_data_dir=str(user_data_dir),
+            browser_executable_path=args.browser_path or None,
         )
         browser = await uc.start(config=config)
         tab = await browser.get(args.url)
@@ -2597,6 +2601,8 @@ export class AISearcher {
       `${waitSeconds}`,
       "--mode",
       browse ? "browse" : "setup",
+      "--browser-path",
+      this.findBrowser(),
     ];
     if (proxy) {
       baseArgs.push("--proxy", proxy);
@@ -2855,6 +2861,8 @@ export class AISearcher {
       absoluteImagePath,
       "--timeout-seconds",
       `${timeoutSeconds}`,
+      "--browser-path",
+      this.findBrowser(),
     ];
     if (proxy) {
       baseArgs.push("--proxy", proxy);
