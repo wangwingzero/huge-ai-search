@@ -401,25 +401,11 @@ function formatSearchResult(
     : `## AI 搜索结果\n\n`;
 
   output += `**查询**: ${result.query?.trim() ? result.query : "(仅图片输入)"}\n\n`;
-  output += `### AI 回答\n\n${result.aiAnswer}\n\n`;
+  output += `${result.aiAnswer}\n`;
 
-  if (result.sources.length > 0) {
-    output += `### 来源 (${result.sources.length} 个)\n\n`;
-    for (let i = 0; i < Math.min(result.sources.length, 5); i++) {
-      const source = result.sources[i];
-      output += `${i + 1}. [${source.title}](${source.url})\n`;
-    }
-  }
-
-  // 添加会话信息和追问提示
-  output += `\n---\n`;
   if (sessionId) {
-    output += `🔑 **会话 ID**: \`${sessionId}\`\n\n`;
+    output += `\nsession_id: ${sessionId}\n`;
   }
-  output += `📦 **服务版本**: \`${MCP_SERVER_VERSION}\`（${MCP_RELEASE_CHANNEL}）\n\n`;
-  output += `🧾 **运行日志**: \`${getLogPath()}\`\n\n`;
-  output += `📁 **日志目录**: \`${getLogDir()}\`（默认保留 ${getLogRetentionDays()} 天）\n\n`;
-  output += `💡 **提示**: 如需深入了解，可以设置 \`follow_up: true\`${sessionId ? ` 并传入 \`session_id: "${sessionId}"\`` : ''} 进行追问，AI 会在当前对话上下文中继续回答。\n`;
 
   return output;
 }
