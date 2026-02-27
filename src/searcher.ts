@@ -1789,13 +1789,27 @@ def is_blocked_page(content: str, current_url: str) -> bool:
 
 
 def has_pass_cookie(raw_cookies) -> bool:
+    """Check if cookies contain real Google login tokens (not anonymous session cookies).
+
+    Anonymous/logged-out Google sessions also set SID, HSID etc. but with
+    very short placeholder values.  Real login cookies are typically 50+
+    characters long.  We require at least 2 distinct long-value cookies
+    from the PASS set to reduce false positives.
+    """
+    MIN_VALUE_LENGTH = 50
+    REQUIRED_COUNT = 2
+    found = 0
     for cookie in raw_cookies or []:
         if isinstance(cookie, dict):
             name = str(cookie.get("name", ""))
+            value = str(cookie.get("value", ""))
         else:
             name = str(getattr(cookie, "name", ""))
-        if name in PASS_COOKIE_NAMES:
-            return True
+            value = str(getattr(cookie, "value", ""))
+        if name in PASS_COOKIE_NAMES and len(value) >= MIN_VALUE_LENGTH:
+            found += 1
+            if found >= REQUIRED_COUNT:
+                return True
     return False
 
 
@@ -1941,8 +1955,8 @@ async def main() -> int:
                 await asyncio.sleep(2)
 
             raw_cookies = await fetch_raw_cookies(tab, browser)
-            if save_storage_state(raw_cookies, args.state_path):
-                emit(True, True, "timeout reached; current cookies saved")
+            if has_pass_cookie(raw_cookies) and save_storage_state(raw_cookies, args.state_path):
+                emit(True, True, "timeout reached; login cookies detected and saved")
                 return 0
 
             emit(False, False, f"verification timeout: {timeout_reason}")
