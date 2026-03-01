@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { AISearcher, SearchResult } from "./searcher.js";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { getLogDir, getLogPath, getLogRetentionDays, initializeLogger, writeLog } from "./logger.js";
 import { GlobalConcurrencyCoordinator, GlobalLease } from "./coordinator.js";
@@ -451,6 +452,99 @@ const PREWARM_INTERVAL_MS = parsePositiveIntEnv("HUGE_AI_SEARCH_PREWARM_INTERVAL
 const PREWARM_START_DELAY_MS = parsePositiveIntEnv("HUGE_AI_SEARCH_PREWARM_START_DELAY_MS", 600);
 const PREWARM_LANGUAGE = resolvePrewarmLanguage();
 
+// ============================================
+// 跨进程预热去重
+// 多个 MCP 实例同时运行时，只让一个实例执行预热，
+// 避免大量并行预热请求触发 Google CAPTCHA
+// ============================================
+const PREWARM_HEARTBEAT_DIR = path.join(
+  os.homedir(), ".huge-ai-search", "coordinator"
+);
+const PREWARM_HEARTBEAT_FILE = path.join(
+  PREWARM_HEARTBEAT_DIR, "prewarm_heartbeat.json"
+);
+
+interface PrewarmHeartbeat {
+  pid: number;
+  timestamp: number;
+  sessionId: string;
+}
+
+/**
+ * 检查是否可以执行预热（跨进程去重）。
+ * 如果另一个实例在 PREWARM_INTERVAL_MS * 0.8 内已经做过预热，则跳过。
+ */
+function canPrewarmGlobally(): boolean {
+  try {
+    if (!fs.existsSync(PREWARM_HEARTBEAT_FILE)) {
+      return true;
+    }
+    const raw = fs.readFileSync(PREWARM_HEARTBEAT_FILE, "utf-8");
+    const record: PrewarmHeartbeat = JSON.parse(raw);
+    const age = Date.now() - record.timestamp;
+    // 允许 80% 的间隔窗口，防止临界竞争导致全部跳过
+    if (age < PREWARM_INTERVAL_MS * 0.8) {
+      // 其他实例最近已做过预热，跳过
+      return false;
+    }
+    return true;
+  } catch {
+    // 文件损坏或读取失败，允许预热
+    return true;
+  }
+}
+
+/**
+ * 更新预热心跳文件，声明自己刚完成了预热。
+ */
+function updatePrewarmHeartbeat(sessionId: string): void {
+  try {
+    if (!fs.existsSync(PREWARM_HEARTBEAT_DIR)) {
+      fs.mkdirSync(PREWARM_HEARTBEAT_DIR, { recursive: true });
+    }
+    const record: PrewarmHeartbeat = {
+      pid: process.pid,
+      timestamp: Date.now(),
+      sessionId,
+    };
+    fs.writeFileSync(PREWARM_HEARTBEAT_FILE, JSON.stringify(record), "utf-8");
+  } catch {
+    // 写入失败不影响主流程
+  }
+}
+
+/**
+ * 统计当前活跃的 MCP 实例数（通过 coordinator 目录下的 slot 文件）。
+ * 仅做估算用于日志警告，不阻塞流程。
+ */
+function countActiveInstances(): number {
+  try {
+    const slotsDir = path.join(
+      os.homedir(), ".huge-ai-search", "coordinator", "google-search-slots"
+    );
+    if (!fs.existsSync(slotsDir)) {
+      return 0;
+    }
+    const files = fs.readdirSync(slotsDir).filter(f => f.endsWith(".lock"));
+    let alive = 0;
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(slotsDir, f), "utf-8");
+        const record = JSON.parse(raw);
+        // 心跳在 3 分钟内算活跃
+        if (Date.now() - record.heartbeatAt < 180_000) {
+          alive++;
+        }
+      } catch {
+        // 单文件损坏忽略
+      }
+    }
+    return alive;
+  } catch {
+    return 0;
+  }
+}
+
 let currentSearches = 0;
 const globalCoordinator = CONCURRENCY_SLOT_LIMITS_ENABLED
   ? new GlobalConcurrencyCoordinator({
@@ -729,6 +823,11 @@ async function runBackgroundPrewarm(trigger: "startup" | "interval"): Promise<vo
     return;
   }
 
+  // 跨进程去重：如果其他实例最近已经做过预热，跳过
+  if (!canPrewarmGlobally()) {
+    return;
+  }
+
   prewarmInProgress = true;
   try {
     const preferredSessionId =
@@ -739,6 +838,8 @@ async function runBackgroundPrewarm(trigger: "startup" | "interval"): Promise<vo
     const warmed = await session.searcher.warmUp(PREWARM_LANGUAGE);
     if (warmed) {
       session.lastAccess = Date.now();
+      // 预热成功后更新全局心跳，告知其他实例不必再预热
+      updatePrewarmHeartbeat(sessionId);
       console.error(`[PREWARM] ${trigger} 成功: session=${sessionId}`);
     } else {
       console.error(`[PREWARM] ${trigger} 失败: session=${sessionId}`);
@@ -1336,6 +1437,17 @@ async function main() {
     "INFO",
     `预热配置: enabled=${PREWARM_ENABLED}, intervalMs=${PREWARM_INTERVAL_MS}, startupDelayMs=${PREWARM_START_DELAY_MS}, language=${PREWARM_LANGUAGE}`
   );
+
+  // 检查是否有过多的实例同时运行（仅当 coordinator 启用时有效）
+  if (CONCURRENCY_SLOT_LIMITS_ENABLED) {
+    const activeCount = countActiveInstances();
+    if (activeCount >= MAX_GLOBAL_CONCURRENT_SEARCHES) {
+      log(
+        "INFO",
+        `⚠ 检测到 ${activeCount} 个活跃的 MCP 实例，预热已自动跨进程去重以避免触发 CAPTCHA`
+      );
+    }
+  }
 }
 
 handleCliFlags();
