@@ -1856,7 +1856,32 @@ async def fetch_raw_cookies(tab, browser):
             return []
 
 
-def save_storage_state(raw_cookies, state_path: str) -> bool:
+async def fetch_local_storage(tab) -> dict:
+    """Extract localStorage data from the current page."""
+    try:
+        # Execute JavaScript to extract all localStorage data
+        result = await tab.evaluate("""
+            (() => {
+                const data = {};
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key) {
+                            data[key] = localStorage.getItem(key);
+                        }
+                    }
+                } catch (e) {
+                    // localStorage might be blocked or unavailable
+                }
+                return data;
+            })()
+        """)
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_storage_state(raw_cookies, local_storage_data: dict, state_path: str) -> bool:
     cookies = []
     for raw_cookie in raw_cookies or []:
         converted = cookie_to_playwright(raw_cookie)
@@ -1864,7 +1889,21 @@ def save_storage_state(raw_cookies, state_path: str) -> bool:
             cookies.append(converted)
     if not cookies:
         return False
-    payload = {"cookies": cookies, "origins": []}
+
+    # Build origins array with localStorage data
+    origins = []
+    if local_storage_data:
+        # Group by origin (Google domains)
+        google_origin = {
+            "origin": "https://www.google.com",
+            "localStorage": [
+                {"name": k, "value": v}
+                for k, v in local_storage_data.items()
+            ]
+        }
+        origins.append(google_origin)
+
+    payload = {"cookies": cookies, "origins": origins}
     Path(state_path).parent.mkdir(parents=True, exist_ok=True)
     Path(state_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return True
@@ -1945,7 +1984,8 @@ async def main() -> int:
                 pass
 
             # Save the last successful cookie snapshot
-            if save_storage_state(last_cookies, args.state_path):
+            local_storage = await fetch_local_storage(tab) if tab else {}
+            if save_storage_state(last_cookies, local_storage, args.state_path):
                 emit(True, True, "browser closed, storage state saved")
                 return 0
             else:
@@ -1975,7 +2015,8 @@ async def main() -> int:
                 passed = has_pass_cookie(raw_cookies)
 
                 if passed and not blocked and not consent:
-                    if save_storage_state(raw_cookies, args.state_path):
+                    local_storage = await fetch_local_storage(tab)
+                    if save_storage_state(raw_cookies, local_storage, args.state_path):
                         emit(True, True, "verification passed and storage state saved")
                         return 0
                     timeout_reason = "pass cookies detected but serialization failed"
@@ -1993,9 +2034,11 @@ async def main() -> int:
                 await asyncio.sleep(2)
 
             raw_cookies = await fetch_raw_cookies(tab, browser)
-            if has_pass_cookie(raw_cookies) and save_storage_state(raw_cookies, args.state_path):
-                emit(True, True, "timeout reached; login cookies detected and saved")
-                return 0
+            if has_pass_cookie(raw_cookies):
+                local_storage = await fetch_local_storage(tab)
+                if save_storage_state(raw_cookies, local_storage, args.state_path):
+                    emit(True, True, "timeout reached; login cookies detected and saved")
+                    return 0
 
             emit(False, False, f"verification timeout: {timeout_reason}")
             return 1
