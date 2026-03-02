@@ -2126,9 +2126,9 @@ function releaseCaptchaLock(): void {
 
 export class AISearcher {
   private static readonly BASE_LAUNCH_ARGS = [
-    "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--disable-blink-features=AutomationControlled",
   ];
 
   private static readonly HEADED_EXTRA_LAUNCH_ARGS = [
