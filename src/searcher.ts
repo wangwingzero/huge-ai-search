@@ -1780,12 +1780,43 @@ def cookie_to_playwright(cookie):
     }
 
 
+CONSENT_URL_PATTERNS = [
+    "consent.google",
+    "/consent",
+    "/termsofservice",
+    "/tos?",
+]
+
+CONSENT_CONTENT_KEYWORDS = [
+    "before you continue",
+    "i agree",
+    "accept all",
+    "agree to",
+    "terms of service",
+    "privacy policy update",
+    "服务条款",
+    "隐私权政策",
+    "继续前",
+    "我同意",
+    "全部接受",
+]
+
+
 def is_blocked_page(content: str, current_url: str) -> bool:
     text = (content or "").lower()
     target = (current_url or "").lower()
     if "sorry/index" in target:
         return True
     return any(keyword in text for keyword in CAPTCHA_KEYWORDS)
+
+
+def is_consent_page(content: str, current_url: str) -> bool:
+    """Detect Google consent / Terms-of-Service interstitial pages."""
+    target = (current_url or "").lower()
+    if any(pattern in target for pattern in CONSENT_URL_PATTERNS):
+        return True
+    text = (content or "").lower()
+    return any(keyword in text for keyword in CONSENT_CONTENT_KEYWORDS)
 
 
 def has_pass_cookie(raw_cookies) -> bool:
@@ -1924,6 +1955,7 @@ async def main() -> int:
             # Setup mode: poll for login cookies
             deadline = time.monotonic() + max(10, int(args.wait_seconds))
             timeout_reason = "verification not completed"
+            consent_logged = False
 
             while time.monotonic() < deadline:
                 content = ""
@@ -1939,9 +1971,10 @@ async def main() -> int:
 
                 raw_cookies = await fetch_raw_cookies(tab, browser)
                 blocked = is_blocked_page(content, current_url)
+                consent = is_consent_page(content, current_url)
                 passed = has_pass_cookie(raw_cookies)
 
-                if passed and not blocked:
+                if passed and not blocked and not consent:
                     if save_storage_state(raw_cookies, args.state_path):
                         emit(True, True, "verification passed and storage state saved")
                         return 0
@@ -1949,6 +1982,11 @@ async def main() -> int:
                 else:
                     if blocked:
                         timeout_reason = "still blocked by captcha/suspicious traffic page"
+                    elif consent:
+                        timeout_reason = "waiting for user to accept consent/terms page"
+                        if not consent_logged:
+                            print("Consent/Terms page detected. Please complete the agreement in the browser.", file=sys.stderr)
+                            consent_logged = True
                     else:
                         timeout_reason = "login cookies not ready"
 

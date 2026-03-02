@@ -403,6 +403,18 @@ npx -y -p huge-ai-search@latest huge-ai-search-setup
 
 按提示在浏览器完成登录/验证后关闭窗口即可。
 
+如果 setup 闪退或浏览器异常关闭，可以清除旧的浏览器数据后重试：
+
+```powershell
+# Windows PowerShell
+Remove-Item -Recurse -Force "$HOME\.huge-ai-search\nodriver_profile" -ErrorAction SilentlyContinue; npx -y -p huge-ai-search@latest huge-ai-search-setup
+```
+
+```bash
+# macOS / Linux
+rm -rf ~/.huge-ai-search/nodriver_profile && npx -y -p huge-ai-search@latest huge-ai-search-setup
+```
+
 ### 4) 日志在哪
 
 - Windows: `C:\\Users\\<用户名>\\.huge-ai-search\\logs\\`

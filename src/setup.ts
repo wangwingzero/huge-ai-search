@@ -19,7 +19,8 @@ async function main() {
     console.log("此工具将打开浏览器窗口，请完成以下操作：");
     console.log("  1. 如果出现验证码，请完成验证");
     console.log("  2. 如果需要登录 Google，请登录你的账户");
-    console.log("  3. 完成后，关闭浏览器窗口即可\n");
+    console.log("  3. 如果出现服务条款/隐私协议页面，请点击同意");
+    console.log("  4. 完成后，关闭浏览器窗口即可\n");
   }
 
   const searcher = new AISearcher(60, false, "setup");
