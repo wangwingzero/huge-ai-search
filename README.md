@@ -393,7 +393,36 @@ mcp_huge_ai_search_search({
 - `command = "cmd"`
 - `args = ["/c", "npx", "-y", "huge-ai-search@latest"]`
 
-### 3) 需要登录/验证码怎么办
+补充说明：
+
+- 不建议把 `command` 直接写成 `npx`（部分环境会出现依赖解析异常）
+- 优先使用全局安装 + `cmd /c huge-ai-search`（最稳定）
+
+### 3) 报错 `connection closed: initialize response`
+
+这表示 MCP Server 在初始化握手阶段未返回 `initialize` 响应就断开了。
+
+优先检查：
+
+1. 配置是否为 Windows 推荐写法（`cmd /c huge-ai-search`）
+2. 命令是否可直接运行：`cmd /c huge-ai-search --version`
+3. 若用 `npx`，改为 `cmd /c npx ...`，不要直接 `command: "npx"`
+
+推荐配置（Windows）：
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "huge-ai-search"],
+      "type": "stdio"
+    }
+  }
+}
+```
+
+### 4) 需要登录/验证码怎么办
 
 执行：
 
@@ -415,7 +444,7 @@ Remove-Item -Recurse -Force "$HOME\.huge-ai-search\nodriver_profile" -ErrorActio
 rm -rf ~/.huge-ai-search/nodriver_profile && npx -y -p huge-ai-search@latest huge-ai-search-setup
 ```
 
-### 4) 日志在哪
+### 5) 日志在哪
 
 - Windows: `C:\\Users\\<用户名>\\.huge-ai-search\\logs\\`
 - macOS: `/Users/<用户名>/.huge-ai-search/logs/`

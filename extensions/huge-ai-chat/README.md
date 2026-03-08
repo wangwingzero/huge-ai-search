@@ -124,7 +124,18 @@ npx -v
 3. Windows 建议执行一次全局安装：`npm i -g huge-ai-search`
 4. 重新执行 `HUGE: Open Chat` 或 `HUGE: Run Login Setup`
 
-### 2) 登录流程打不开 / 卡住
+### 2) MCP 报错 `connection closed: initialize response`
+
+这表示 MCP 服务在初始化握手阶段未返回 `initialize` 响应就断开了。
+
+排查步骤：
+
+1. 终端执行：`cmd /c huge-ai-search --version`（应能返回版本号）
+2. Windows 优先使用：`cmd /c huge-ai-search`，不要直接把 `command` 写成 `npx`
+3. 若必须走 npx，请写成：`cmd /c npx -y huge-ai-search@latest`
+4. 重启 VS Code 后再次执行 `HUGE: Open Chat`
+
+### 3) 登录流程打不开 / 卡住
 
 排查步骤：
 
@@ -134,7 +145,7 @@ npx -v
 4. 关闭代理或切换网络后重试（公司网络/防火墙可能拦截）
 5. 如仍失败，重启 VS Code 后再次执行 Setup
 
-### 3) 一直提示网络错误 / 超时
+### 4) 一直提示网络错误 / 超时
 
 排查步骤：
 
@@ -143,7 +154,7 @@ npx -v
 3. 关闭冲突代理工具后重试
 4. 重试前先执行 `HUGE: New Thread`
 
-### 4) 来源链接为空或返回“无可验证记录”
+### 5) 来源链接为空或返回“无可验证记录”
 
 这通常是检索侧暂时没有可验证来源，并非插件崩溃。  
 可尝试：
@@ -152,7 +163,7 @@ npx -v
 2. 先问“请给可验证来源再回答”
 3. 换一轮新会话后再问
 
-### 5) 需要重置本地状态
+### 6) 需要重置本地状态
 
 1. 执行 `HUGE: Clear History`
 2. 再执行 `HUGE: Run Login Setup`
