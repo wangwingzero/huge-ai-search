@@ -116,6 +116,26 @@ Windows:
 }
 ```
 
+中国大陆或必须走代理的环境，建议显式写入代理变量，避免 MCP 子进程在启动时没有继承到代理，导致握手阶段直接断开：
+
+```json
+{
+  "mcpServers": {
+    "huge-ai-search": {
+      "command": "cmd",
+      "args": ["/c", "huge-ai-search"],
+      "type": "stdio",
+      "startup_timeout_sec": 120,
+      "tool_timeout_sec": 180,
+      "env": {
+        "ALL_PROXY": "socks5://127.0.0.1:10808",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
+      }
+    }
+  }
+}
+```
+
 </details>
 
 <details>
@@ -163,7 +183,13 @@ command = "cmd"
 args = ["/c", "huge-ai-search"]
 startup_timeout_sec = 120
 tool_timeout_sec = 180
+
+[mcp_servers.huge-ai-search.env]
+ALL_PROXY = "socks5://127.0.0.1:10808"
+NO_PROXY = "localhost,127.0.0.1,::1"
 ```
+
+如果你的本地代理不是 `10808`，把 `ALL_PROXY` 改成实际可用端口即可，例如 `http://127.0.0.1:7890`。
 
 </details>
 
@@ -407,6 +433,14 @@ mcp_huge_ai_search_search({
 1. 配置是否为 Windows 推荐写法（`cmd /c huge-ai-search`）
 2. 命令是否可直接运行：`cmd /c huge-ai-search --version`
 3. 若用 `npx`，改为 `cmd /c npx ...`，不要直接 `command: "npx"`
+4. 中国大陆或需代理环境下，是否给 MCP 配置显式传入了 `ALL_PROXY` / `NO_PROXY`
+5. 本地代理端口是否真的可用，且协议是否匹配，例如 `socks5://127.0.0.1:10808` 或 `http://127.0.0.1:7890`
+
+常见根因：
+
+- `huge-ai-search` 可执行命令本身没有问题，但 MCP 客户端拉起的子进程没继承到代理
+- 代理端口存在切换、断开或协议写错，导致浏览器预热和初始化阶段网络失败
+- Windows 下直接把 `command` 写成 `npx`，导致部分客户端的 stdio 握手不稳定
 
 推荐配置（Windows）：
 
@@ -416,11 +450,38 @@ mcp_huge_ai_search_search({
     "huge-ai-search": {
       "command": "cmd",
       "args": ["/c", "huge-ai-search"],
-      "type": "stdio"
+      "type": "stdio",
+      "startup_timeout_sec": 120,
+      "tool_timeout_sec": 180,
+      "env": {
+        "ALL_PROXY": "socks5://127.0.0.1:10808",
+        "NO_PROXY": "localhost,127.0.0.1,::1"
+      }
     }
   }
 }
 ```
+
+Codex `config.toml` 推荐配置（Windows）：
+
+```toml
+[mcp_servers.huge-ai-search]
+type = "stdio"
+command = "cmd"
+args = ["/c", "huge-ai-search"]
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+
+[mcp_servers.huge-ai-search.env]
+ALL_PROXY = "socks5://127.0.0.1:10808"
+NO_PROXY = "localhost,127.0.0.1,::1"
+```
+
+排查顺序建议：
+
+1. 先执行 `cmd /c huge-ai-search --version`，确认命令本身可运行
+2. 再确认代理端口是否在线
+3. 最后把代理环境变量显式写进 MCP 配置后重启客户端
 
 ### 4) 需要登录/验证码怎么办
 
