@@ -790,18 +790,60 @@ async function cleanupSessions(): Promise<void> {
   }
 }
 
-// 启动定期清理
-setInterval(() => {
+// 启动定期清理（unref 确保不阻止进程退出）
+const cleanupTimer = setInterval(() => {
   cleanupSessions().catch((err) => console.error(`清理会话失败: ${err}`));
 }, CLEANUP_INTERVAL_MS);
+cleanupTimer.unref();
 
+let prewarmTimer: ReturnType<typeof setInterval> | null = null;
 if (PREWARM_ENABLED) {
-  setInterval(() => {
+  prewarmTimer = setInterval(() => {
     runBackgroundPrewarm("interval").catch((err) =>
       console.error(`[PREWARM] 定时预热失败: ${err}`)
     );
   }, PREWARM_INTERVAL_MS);
+  prewarmTimer.unref();
 }
+
+/**
+ * 全局退出清理：关闭所有会话的浏览器实例，防止僵尸进程
+ */
+async function shutdownAllSessions(): Promise<void> {
+  const ids = Array.from(sessions.keys());
+  if (ids.length === 0) return;
+  log("INFO", `正在关闭 ${ids.length} 个会话...`);
+  const promises = ids.map((id) =>
+    closeSession(id).catch((err) => log("ERROR", `关闭会话 ${id} 失败: ${err}`))
+  );
+  await Promise.allSettled(promises);
+  log("INFO", "所有会话已关闭");
+}
+
+let isShuttingDown = false;
+function gracefulShutdown(signal: string): void {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log("INFO", `收到 ${signal} 信号，开始优雅退出...`);
+  if (cleanupTimer) clearInterval(cleanupTimer);
+  if (prewarmTimer) clearInterval(prewarmTimer);
+  shutdownAllSessions()
+    .catch((err) => log("ERROR", `退出清理失败: ${err}`))
+    .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  // 兜底：5 秒后强制退出
+  setTimeout(() => process.exit(1), 5000).unref();
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("exit", () => {
+  // 同步清理：强制关闭残留的浏览器引用（尽力而为）
+  for (const [, session] of sessions) {
+    try {
+      (session.searcher as any).browser?.process()?.kill();
+    } catch { /* ignore */ }
+  }
+});
 
 /**
  * 获取当前会话状态（用于调试）
@@ -1417,6 +1459,16 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // 监听 stdin 关闭 → MCP 客户端断开时自动退出，防止僵尸进程
+  process.stdin.on("end", () => {
+    log("INFO", "stdin 已关闭（MCP 客户端断开），开始退出...");
+    gracefulShutdown("STDIN_END");
+  });
+  process.stdin.on("error", () => {
+    log("INFO", "stdin 出错（MCP 客户端断开），开始退出...");
+    gracefulShutdown("STDIN_ERROR");
+  });
   if (PREWARM_ENABLED) {
     setTimeout(() => {
       runBackgroundPrewarm("startup").catch((error) =>
