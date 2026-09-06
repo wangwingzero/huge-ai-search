@@ -16,19 +16,25 @@
 ## 版本说明（三部分）
 
 <p align="center">
-  <a href="#第一部分mcp-版"><img src="https://img.shields.io/badge/查看-MCP%20版-ff8c00?style=for-the-badge" alt="MCP 版" /></a>
-  <a href="#第二部分ide-插件版"><img src="https://img.shields.io/badge/查看-IDE%20插件版-2ea44f?style=for-the-badge" alt="IDE 插件版" /></a>
-  <a href="#第三部分skill-版"><img src="https://img.shields.io/badge/查看-Skill%20版-6f42c1?style=for-the-badge" alt="Skill 版" /></a>
+  <a href="#第一部分skill-版"><img src="https://img.shields.io/badge/查看-Skill%20版-6f42c1?style=for-the-badge" alt="Skill 版" /></a>
+  <a href="#第二部分mcp-版"><img src="https://img.shields.io/badge/查看-MCP%20版-ff8c00?style=for-the-badge" alt="MCP 版" /></a>
+  <a href="#第三部分ide-插件版"><img src="https://img.shields.io/badge/查看-IDE%20插件版-2ea44f?style=for-the-badge" alt="IDE 插件版" /></a>
 </p>
 
-### 1) MCP 版（本 README 主要内容）
+### 1) Skill 版（本 README 推荐入口）
+
+- 给 Cursor / Claude Code / Codex 等 Agent 用的 `SKILL.md`
+- 有 MCP 时直接调 `search` 工具；没有 MCP 时走 `huge-ai-search search` CLI
+- 安装：把 [一键部署话术](#skill-one-click) 发给你的 AI，或执行 `npx -y huge-ai-search@latest skill-install`
+
+### 2) MCP 版
 
 - 面向 Cursor / Claude Code / Codex 等支持 MCP 的客户端
 - 通过 `huge-ai-search` 工具调用联网搜索
 - NPM：
   `https://www.npmjs.com/package/huge-ai-search`
 
-### 2) IDE 插件版（兼容 VS Code 扩展生态）
+### 3) IDE 插件版（兼容 VS Code 扩展生态）
 
 - 扩展名：`hudawang.huge-ai-search`（显示名：HUGE）
 - 可在支持 VS Code 扩展生态的 IDE 中使用（如 VS Code / Cursor / Windsurf 等）
@@ -37,13 +43,157 @@
 - VS Code Marketplace：
   `https://marketplace.visualstudio.com/items?itemName=hudawang.huge-ai-search`
 
-### 3) Skill 版（Agent Skills）
+## 第一部分：Skill 版
 
-- 给 Cursor / Claude Code / Codex 等 Agent 用的 `SKILL.md`
-- 有 MCP 时直接调 `search` 工具；没有 MCP 时走 `huge-ai-search search` CLI
-- 安装：把 [一键部署话术](#skill-one-click) 发给你的 AI，或自己执行 `npx -y huge-ai-search@latest skill-install`
+Skill 教 Agent「什么时候搜、怎么追问」。真正搜索仍由本项目的 MCP 或 CLI 执行，Agent 不用自己写 Playwright、也不用自己开浏览器。
 
-## 第一部分：MCP 版
+<h3 id="skill-one-click">30 秒：复制给 AI，一键安装</h3>
+
+1. 确认已安装 [Node.js 18+](https://nodejs.org/) 和 [Microsoft Edge](https://www.microsoft.com/edge)
+2. 打开 Cursor / Claude Code / Codex（或任何能在你电脑上执行命令的 AI）
+3. 复制下面整段话，原样发给它
+4. 如果弹出 Edge / Google 登录窗口，你自己点完登录再关窗口
+5. 看到「安装完成」后，**新开一个对话**，再说「搜一下 xxx」
+
+GitHub 代码块右上角有复制按钮：
+
+```text
+请在我这台电脑上安装 Huge AI Search 的 Agent Skill，让以后对话里你能用 Google AI Mode 联网搜索。不要只给步骤，请直接执行命令。
+
+项目：https://github.com/wangwingzero/huge-ai-search
+包名：huge-ai-search
+
+按这个顺序做。不要启动无参数的 huge-ai-search（那会进入 MCP 服务器并卡住）。只有缺 Node.js 18+、没装 Microsoft Edge、或弹出了 Google 登录窗口需要我动手时，才停下来问我。
+
+1) 检查 node、npm、npx 是否可用。没有就告诉我先安装 Node.js 18+ LTS，然后停止。
+2) 检查本机是否已安装 Microsoft Edge。没有就告诉我先安装 Edge，然后停止。
+3) 先执行：npx -y huge-ai-search@latest skill-install
+   如果提示未知命令 skill-install，或版本过旧，则改用源码安装：
+   - 克隆 https://github.com/wangwingzero/huge-ai-search.git 到系统临时目录（--depth 1）
+   - 在仓库里执行 npm install 和 npm run build
+   - 再执行 node dist/index.js skill-install
+4) 确认 Skill 文件已落到用户目录，至少成功一份即可：
+   Windows：
+   %USERPROFILE%\.cursor\skills\huge-ai-search\SKILL.md
+   %USERPROFILE%\.claude\skills\huge-ai-search\SKILL.md
+   %USERPROFILE%\.codex\skills\huge-ai-search\SKILL.md
+   %USERPROFILE%\.agents\skills\huge-ai-search\SKILL.md
+   macOS / Linux：
+   ~/.cursor/skills/huge-ai-search/SKILL.md
+   ~/.claude/skills/huge-ai-search/SKILL.md
+   ~/.codex/skills/huge-ai-search/SKILL.md
+   ~/.agents/skills/huge-ai-search/SKILL.md
+5) 如果 ~/.huge-ai-search/browser_data/storage_state.json 还不存在，执行：
+   npx -y -p huge-ai-search@latest huge-ai-search-setup
+   浏览器弹出后立刻停下来，让我完成 Google 登录或验证码，并关闭浏览器窗口，然后再继续。
+6) 用这条命令确认 CLI 可用（不要做完整网页搜索）：
+   npx -y huge-ai-search@latest --help
+   输出里必须能看到 search 和 skill-install。
+7) 最后用中文回复我：装到了哪些目录、CLI 是否可用、以及下一句该对 AI 说什么。请明确告诉我：请新开一个对话，然后说「搜一下 React 19 有什么新特性」。
+
+中国大陆如需代理：优先沿用已有的 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。本工具也会自动探测 10808、7890 等本地端口，一般不用你手动配。
+```
+
+装好后的用法：新开对话，直接说「搜一下 ……」。Agent 会读这个 Skill：有 MCP 就调 `search` 工具，没有 MCP 就跑 `huge-ai-search search`。
+
+### 这是什么
+
+| 文件 | 作用 |
+|---|---|
+| `skills/huge-ai-search/SKILL.md` | 给 Agent 的说明书：何时搜、怎么追问、MCP / CLI 怎么选 |
+| `huge-ai-search skill-install` | 把上面这份 Skill 复制到本机各 Agent 目录 |
+| `huge-ai-search search` | 没有 MCP 时，Skill 用来调用 Google AI Mode 的命令 |
+
+本仓库里也放了一份，克隆后 Cursor 即可发现：
+
+- `.agents/skills/huge-ai-search/`
+- `.cursor/skills/huge-ai-search/`
+
+其他项目、或只想装到自己电脑上，用 `skill-install`（装到用户主目录，对所有站点生效）。
+
+### 手动安装
+
+1. 安装 Microsoft Edge，并完成一次登录：
+
+```bash
+npx -y -p huge-ai-search@latest huge-ai-search-setup
+```
+
+2. 安装 Skill（默认同时装到 Cursor / Claude Code / Codex / agents）：
+
+```bash
+npx -y huge-ai-search@latest skill-install
+```
+
+只要装其中一个客户端：
+
+```bash
+npx -y huge-ai-search@latest skill-install --target cursor
+```
+
+`--target` 可选：`all`（默认）、`cursor`、`claude`、`codex`、`agents`。
+
+3. **新开一个 Agent 会话**。之后直接说「搜一下 React 19 新特性」即可。
+
+安装位置：
+
+| 目标 | 目录 |
+|---|---|
+| Cursor | `~/.cursor/skills/huge-ai-search` |
+| Claude Code | `~/.claude/skills/huge-ai-search` |
+| Codex | `~/.codex/skills/huge-ai-search` |
+| 通用 | `~/.agents/skills/huge-ai-search` |
+
+Windows 对应 `%USERPROFILE%\.cursor\skills\huge-ai-search` 等。
+
+### Agent 怎么搜
+
+**优先 MCP**（已配置 `huge-ai-search` 服务器时）：调用 `search` 工具，用返回的 `session_id` 追问 2–3 次。
+
+**没有 MCP 时走 CLI**：
+
+```bash
+huge-ai-search search --query "React 19 有什么新特性" --language zh-CN --format json
+```
+
+Windows 未全局安装时：
+
+```powershell
+npx -y huge-ai-search@latest search --query "React 19 有什么新特性" --language zh-CN --format json
+```
+
+CLI 说明：
+
+- stdout 是结果，日志在 stderr
+- Agent 调命令时默认输出 JSON：读 `data.answer_markdown` 和 `data.session_id`
+- 查看参数：`huge-ai-search help search` 或 `huge-ai-search schema search`
+- CLI 每次都是新进程，页内连续对话不如 MCP。没有 MCP 时，把上一轮要点写进下一条 `--query`
+- 不要运行无参数的 `huge-ai-search`，那会启动 MCP 并占用终端
+
+### 和 MCP / 插件的关系
+
+| 方式 | 适合谁 | 追问 |
+|---|---|---|
+| Skill 版 | 任意支持 Agent Skills 的客户端 | 有 MCP 则走 MCP；否则 CLI 多轮新搜索 |
+| MCP 版 | 已配置 MCP 的 Cursor / Claude Code / Codex | 同一进程内 `follow_up` + `session_id` |
+| 插件版 | 要侧边栏聊天的 IDE 用户 | 插件会话内连续问 |
+
+三者共用同一套 Google 登录态（`~/.huge-ai-search/`）。只装 Skill、不配 MCP 也可以搜索。
+
+### Skill 版常见问题
+
+1. 发给 AI 后它只回步骤、不执行  
+   再发一句：「按刚才那段话直接在我电脑上执行，不要只讲解。」并确认当前模式允许跑终端命令。
+2. `skill-install` 不是一个命令  
+   先确认版本：`npx -y huge-ai-search@latest --version` 应为 `1.2.0` 及以上；否则按一键话术里的源码安装分支做。
+3. 装好了但 AI 还不搜  
+   必须**新开对话**。当前这次会话开始时还没读到新 Skill。
+4. 弹出登录 / 验证码  
+   在浏览器里完成验证后关闭窗口，再让 AI 重试。或手动执行 `npx -y -p huge-ai-search@latest huge-ai-search-setup`。
+5. Windows 上 `npx` 不稳定  
+   先 `npm i -g huge-ai-search@latest`，再执行 `huge-ai-search skill-install`。
+
+## 第二部分：MCP 版
 
 <p align="left">
   <img src="./resources/MCP-introduce.png" alt="MCP 连续追问示意" width="620" />
@@ -518,7 +668,7 @@ rm -rf ~/.huge-ai-search/nodriver_profile && npx -y -p huge-ai-search@latest hug
 - macOS: `/Users/<用户名>/.huge-ai-search/logs/`
 - Linux: `/home/<用户名>/.huge-ai-search/logs/`
 
-## 第二部分：IDE 插件版
+## 第三部分：IDE 插件版
 
 在支持 VS Code 扩展生态的 IDE 中，可直接安装并在侧边栏使用：
 
@@ -600,156 +750,6 @@ Marketplace：
 ### 详细插件文档
 
 - `extensions/huge-ai-chat/README.md`
-
-## 第三部分：Skill 版
-
-Skill 教 Agent「什么时候搜、怎么追问」。真正搜索仍由本项目的 MCP 或 CLI 执行，Agent 不用自己写 Playwright、也不用自己开浏览器。
-
-<h3 id="skill-one-click">30 秒：复制给 AI，一键安装</h3>
-
-1. 确认已安装 [Node.js 18+](https://nodejs.org/) 和 [Microsoft Edge](https://www.microsoft.com/edge)
-2. 打开 Cursor / Claude Code / Codex（或任何能在你电脑上执行命令的 AI）
-3. 复制下面整段话，原样发给它
-4. 如果弹出 Edge / Google 登录窗口，你自己点完登录再关窗口
-5. 看到「安装完成」后，**新开一个对话**，再说「搜一下 xxx」
-
-GitHub 代码块右上角有复制按钮：
-
-```text
-请在我这台电脑上安装 Huge AI Search 的 Agent Skill，让以后对话里你能用 Google AI Mode 联网搜索。不要只给步骤，请直接执行命令。
-
-项目：https://github.com/wangwingzero/huge-ai-search
-包名：huge-ai-search
-
-按这个顺序做。不要启动无参数的 huge-ai-search（那会进入 MCP 服务器并卡住）。只有缺 Node.js 18+、没装 Microsoft Edge、或弹出了 Google 登录窗口需要我动手时，才停下来问我。
-
-1) 检查 node、npm、npx 是否可用。没有就告诉我先安装 Node.js 18+ LTS，然后停止。
-2) 检查本机是否已安装 Microsoft Edge。没有就告诉我先安装 Edge，然后停止。
-3) 先执行：npx -y huge-ai-search@latest skill-install
-   如果提示未知命令 skill-install，或版本过旧，则改用源码安装：
-   - 克隆 https://github.com/wangwingzero/huge-ai-search.git 到系统临时目录（--depth 1）
-   - 在仓库里执行 npm install 和 npm run build
-   - 再执行 node dist/index.js skill-install
-4) 确认 Skill 文件已落到用户目录，至少成功一份即可：
-   Windows：
-   %USERPROFILE%\.cursor\skills\huge-ai-search\SKILL.md
-   %USERPROFILE%\.claude\skills\huge-ai-search\SKILL.md
-   %USERPROFILE%\.codex\skills\huge-ai-search\SKILL.md
-   %USERPROFILE%\.agents\skills\huge-ai-search\SKILL.md
-   macOS / Linux：
-   ~/.cursor/skills/huge-ai-search/SKILL.md
-   ~/.claude/skills/huge-ai-search/SKILL.md
-   ~/.codex/skills/huge-ai-search/SKILL.md
-   ~/.agents/skills/huge-ai-search/SKILL.md
-5) 如果 ~/.huge-ai-search/browser_data/storage_state.json 还不存在，执行：
-   npx -y -p huge-ai-search@latest huge-ai-search-setup
-   浏览器弹出后立刻停下来，让我完成 Google 登录或验证码，并关闭浏览器窗口，然后再继续。
-6) 用这条命令确认 CLI 可用（不要做完整网页搜索）：
-   npx -y huge-ai-search@latest --help
-   输出里必须能看到 search 和 skill-install。
-7) 最后用中文回复我：装到了哪些目录、CLI 是否可用、以及下一句该对 AI 说什么。请明确告诉我：请新开一个对话，然后说「搜一下 React 19 有什么新特性」。
-
-中国大陆如需代理：优先沿用已有的 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。本工具也会自动探测 10808、7890 等本地端口，一般不用你手动配。
-```
-
-装好后的用法：新开对话，直接说「搜一下 ……」。Agent 会读这个 Skill：有 MCP 就调 `search` 工具，没有 MCP 就跑 `huge-ai-search search`。
-
-### 这是什么
-
-| 文件 | 作用 |
-|---|---|
-| `skills/huge-ai-search/SKILL.md` | 给 Agent 的说明书：何时搜、怎么追问、MCP / CLI 怎么选 |
-| `huge-ai-search skill-install` | 把上面这份 Skill 复制到本机各 Agent 目录 |
-| `huge-ai-search search` | 没有 MCP 时，Skill 用来调用 Google AI Mode 的命令 |
-
-本仓库里也放了一份，克隆后 Cursor 即可发现：
-
-- `.agents/skills/huge-ai-search/`
-- `.cursor/skills/huge-ai-search/`
-
-其他项目、或只想装到自己电脑上，用 `skill-install`（装到用户主目录，对所有站点生效）。
-
-### 手动安装
-
-1. 安装 Microsoft Edge，并完成一次登录：
-
-```bash
-npx -y -p huge-ai-search@latest huge-ai-search-setup
-```
-
-2. 安装 Skill（默认同时装到 Cursor / Claude Code / Codex / agents）：
-
-```bash
-npx -y huge-ai-search@latest skill-install
-```
-
-只要装其中一个客户端：
-
-```bash
-npx -y huge-ai-search@latest skill-install --target cursor
-```
-
-`--target` 可选：`all`（默认）、`cursor`、`claude`、`codex`、`agents`。
-
-3. **新开一个 Agent 会话**。之后直接说「搜一下 React 19 新特性」即可。
-
-安装位置：
-
-| 目标 | 目录 |
-|---|---|
-| Cursor | `~/.cursor/skills/huge-ai-search` |
-| Claude Code | `~/.claude/skills/huge-ai-search` |
-| Codex | `~/.codex/skills/huge-ai-search` |
-| 通用 | `~/.agents/skills/huge-ai-search` |
-
-Windows 对应 `%USERPROFILE%\.cursor\skills\huge-ai-search` 等。
-
-### Agent 怎么搜
-
-**优先 MCP**（已配置 `huge-ai-search` 服务器时）：调用 `search` 工具，用返回的 `session_id` 追问 2–3 次。
-
-**没有 MCP 时走 CLI**：
-
-```bash
-huge-ai-search search --query "React 19 有什么新特性" --language zh-CN --format json
-```
-
-Windows 未全局安装时：
-
-```powershell
-npx -y huge-ai-search@latest search --query "React 19 有什么新特性" --language zh-CN --format json
-```
-
-CLI 说明：
-
-- stdout 是结果，日志在 stderr
-- Agent 调命令时默认输出 JSON：读 `data.answer_markdown` 和 `data.session_id`
-- 查看参数：`huge-ai-search help search` 或 `huge-ai-search schema search`
-- CLI 每次都是新进程，页内连续对话不如 MCP。没有 MCP 时，把上一轮要点写进下一条 `--query`
-- 不要运行无参数的 `huge-ai-search`，那会启动 MCP 并占用终端
-
-### 和 MCP / 插件的关系
-
-| 方式 | 适合谁 | 追问 |
-|---|---|---|
-| MCP 版 | 已配置 MCP 的 Cursor / Claude Code / Codex | 同一进程内 `follow_up` + `session_id` |
-| 插件版 | 要侧边栏聊天的 IDE 用户 | 插件会话内连续问 |
-| Skill 版 | 任意支持 Agent Skills 的客户端 | 有 MCP 则走 MCP；否则 CLI 多轮新搜索 |
-
-三者共用同一套 Google 登录态（`~/.huge-ai-search/`）。只装 Skill、不配 MCP 也可以搜索。
-
-### Skill 版常见问题
-
-1. 发给 AI 后它只回步骤、不执行  
-   再发一句：「按刚才那段话直接在我电脑上执行，不要只讲解。」并确认当前模式允许跑终端命令。
-2. `skill-install` 不是一个命令  
-   npm 上的旧版本还没有这个子命令。按一键话术里的源码安装分支做，或等 `huge-ai-search@latest` 发布后重试。
-3. 装好了但 AI 还不搜  
-   必须**新开对话**。当前这次会话开始时还没读到新 Skill。
-4. 弹出登录 / 验证码  
-   在浏览器里完成验证后关闭窗口，再让 AI 重试。或手动执行 `npx -y -p huge-ai-search@latest huge-ai-search-setup`。
-5. Windows 上 `npx` 不稳定  
-   先 `npm i -g huge-ai-search@latest`，再执行 `huge-ai-search skill-install`。
 
 ## License
 
