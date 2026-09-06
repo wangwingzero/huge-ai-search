@@ -15,6 +15,17 @@ import * as os from "os";
 import * as path from "path";
 import { getLogDir, getLogPath, getLogRetentionDays, initializeLogger, writeLog } from "./logger.js";
 import { GlobalConcurrencyCoordinator, GlobalLease } from "./coordinator.js";
+import {
+  extractSessionId,
+  installSkill,
+  parseCliArgs,
+  printHelp,
+  printSchema,
+  resultLooksSuccessful,
+  SearchHandleResult,
+  SearchToolArgs,
+  writeSearchOutput,
+} from "./cli.js";
 
 initializeLogger();
 
@@ -46,18 +57,6 @@ function getReleaseChannel(version: string): "stable" | "pre-release" {
 const MCP_SERVER_NAME = "huge-ai-search";
 const MCP_SERVER_VERSION = loadPackageVersion();
 const MCP_RELEASE_CHANNEL = getReleaseChannel(MCP_SERVER_VERSION);
-
-function handleCliFlags(): void {
-  const args = new Set(process.argv.slice(2));
-  if (args.has("--version") || args.has("-v")) {
-    console.log(`${MCP_SERVER_VERSION} (${MCP_RELEASE_CHANNEL})`);
-    process.exit(0);
-  }
-  if (args.has("--release-channel")) {
-    console.log(MCP_RELEASE_CHANNEL);
-    process.exit(0);
-  }
-}
 
 // 工具描述
 const TOOL_DESCRIPTION = `使用 AI 模式搜索，获取 AI 总结的搜索结果。
@@ -797,14 +796,6 @@ const cleanupTimer = setInterval(() => {
 cleanupTimer.unref();
 
 let prewarmTimer: ReturnType<typeof setInterval> | null = null;
-if (PREWARM_ENABLED) {
-  prewarmTimer = setInterval(() => {
-    runBackgroundPrewarm("interval").catch((err) =>
-      console.error(`[PREWARM] 定时预热失败: ${err}`)
-    );
-  }, PREWARM_INTERVAL_MS);
-  prewarmTimer.unref();
-}
 
 /**
  * 全局退出清理：关闭所有会话的浏览器实例，防止僵尸进程
@@ -932,34 +923,9 @@ const server = new McpServer({
   version: MCP_SERVER_VERSION,
 });
 
-// 注册工具
-server.tool(
-  "search",
-  TOOL_DESCRIPTION,
-  {
-    query: z.string().describe("搜索问题（使用自然语言提问）"),
-    language: z
-      .enum(["zh-CN", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR"])
-      .default("en-US")
-      .describe("搜索结果语言"),
-    follow_up: z
-      .boolean()
-      .default(false)
-      .describe("是否在当前对话上下文中追问"),
-    session_id: z
-      .string()
-      .optional()
-      .describe("会话 ID（用于多窗口独立追问，首次搜索会自动生成并返回）"),
-    image_path: z
-      .string()
-      .optional()
-      .describe("可选。要上传到 HUGE AI 的本地图片绝对路径（当前单图输入）"),
-    create_image: z
-      .boolean()
-      .default(false)
-      .describe("可选。设为 true 时进入画图模式，使用 Google AI Mode 的 Create images 功能生成图片"),
-  },
-  async (args) => {
+type McpTextResult = { content: Array<{ type: "text"; text: string }> };
+
+async function handleSearchTool(args: SearchToolArgs): Promise<McpTextResult> {
     const { query, language, follow_up, session_id, image_path, create_image } = args;
     const requestStartMs = Date.now();
     const normalizedQuery = query.trim();
@@ -1452,7 +1418,53 @@ server.tool(
         releaseLocalSearchSlot();
       }
     }
-  }
+}
+
+async function handleSearch(args: SearchToolArgs): Promise<SearchHandleResult> {
+  const result = await handleSearchTool(args);
+  const text = result.content[0]?.text ?? "";
+  return {
+    ok: resultLooksSuccessful(text),
+    text,
+    sessionId: extractSessionId(text),
+    query: args.query,
+  };
+}
+
+server.tool(
+  "search",
+  TOOL_DESCRIPTION,
+  {
+    query: z.string().describe("搜索问题（使用自然语言提问）"),
+    language: z
+      .enum(["zh-CN", "en-US", "ja-JP", "ko-KR", "de-DE", "fr-FR"])
+      .default("en-US")
+      .describe("搜索结果语言"),
+    follow_up: z
+      .boolean()
+      .default(false)
+      .describe("是否在当前对话上下文中追问"),
+    session_id: z
+      .string()
+      .optional()
+      .describe("会话 ID（用于多窗口独立追问，首次搜索会自动生成并返回）"),
+    image_path: z
+      .string()
+      .optional()
+      .describe("可选。要上传到 HUGE AI 的本地图片绝对路径（当前单图输入）"),
+    create_image: z
+      .boolean()
+      .default(false)
+      .describe("可选。设为 true 时进入画图模式，使用 Google AI Mode 的 Create images 功能生成图片"),
+  },
+  async (args) => handleSearchTool({
+    query: args.query,
+    language: args.language,
+    follow_up: args.follow_up,
+    session_id: args.session_id,
+    image_path: args.image_path,
+    create_image: args.create_image,
+  })
 );
 
 // 启动服务器
@@ -1470,6 +1482,12 @@ async function main() {
     gracefulShutdown("STDIN_ERROR");
   });
   if (PREWARM_ENABLED) {
+    prewarmTimer = setInterval(() => {
+      runBackgroundPrewarm("interval").catch((err) =>
+        console.error(`[PREWARM] 定时预热失败: ${err}`)
+      );
+    }, PREWARM_INTERVAL_MS);
+    prewarmTimer.unref();
     setTimeout(() => {
       runBackgroundPrewarm("startup").catch((error) =>
         console.error(`[PREWARM] 启动预热失败: ${error}`)
@@ -1502,8 +1520,54 @@ async function main() {
   }
 }
 
-handleCliFlags();
-main().catch((error) => {
-  log("ERROR", `服务器启动失败: ${error}`);
+async function runCli(): Promise<void> {
+  const command = parseCliArgs(process.argv.slice(2));
+  switch (command.type) {
+    case "version":
+      console.log(`${MCP_SERVER_VERSION} (${MCP_RELEASE_CHANNEL})`);
+      return;
+    case "release-channel":
+      console.log(MCP_RELEASE_CHANNEL);
+      return;
+    case "help":
+      printHelp(command.topic);
+      return;
+    case "schema":
+      printSchema(command.name, MCP_SERVER_VERSION);
+      return;
+    case "skill-install": {
+      const installed = installSkill(command.target);
+      if (!installed.ok) {
+        console.error(installed.error);
+        process.exitCode = 1;
+        return;
+      }
+      for (const line of installed.lines) {
+        console.log(line);
+      }
+      return;
+    }
+    case "search": {
+      const result = await handleSearch(command.args);
+      writeSearchOutput(result, command.format, MCP_SERVER_VERSION);
+      await shutdownAllSessions();
+      if (!result.ok) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    case "error":
+      console.error(command.message);
+      printHelp(command.topic);
+      process.exitCode = 2;
+      return;
+    case "mcp":
+      await main();
+      return;
+  }
+}
+
+runCli().catch((error) => {
+  log("ERROR", `启动失败: ${error}`);
   process.exit(1);
 });

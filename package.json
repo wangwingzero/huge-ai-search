@@ -1,6 +1,6 @@
 {
   "name": "huge-ai-search",
-  "version": "1.1.50",
+  "version": "1.2.0",
   "description": "Huge AI Search MCP Server - 使用 HUGE AI Mode 进行智能搜索，支持追问对话",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +10,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -26,6 +27,8 @@
     "google",
     "playwright",
     "model-context-protocol",
+    "skill",
+    "agent-skills",
     "claude",
     "kiro",
     "edge"
